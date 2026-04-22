@@ -1,4 +1,4 @@
-"""Translation pipeline routes."""
+"""Translation pipeline routes — OCR → Lovart (translate+render) → return image URL."""
 from __future__ import annotations
 
 import logging
@@ -22,6 +22,8 @@ LANG_NAMES = {
 router = APIRouter()
 
 
+# ── Request / Response models ────────────────────────────────────────────
+
 class TranslateRequest(BaseModel):
     store_handle: str
     product_id: str
@@ -43,6 +45,8 @@ class BatchTranslateRequest(BaseModel):
 class BatchTranslateResponse(BaseModel):
     job_ids: list[str]
 
+
+# ── DB helpers ───────────────────────────────────────────────────────────
 
 def _resolve_store(handle: str) -> tuple[str, str]:
     if not handle:
@@ -132,6 +136,8 @@ def _check_quota(store_id: str) -> tuple[bool, int, int]:
     return used < limit, used, limit
 
 
+# ── Pipeline ─────────────────────────────────────────────────────────────
+
 async def _run_pipeline(job_id: str, store_id: str, image_url: str, target_languages: list[str]):
     from backend.tools.imagelingo.services.lovart_service import LovartService
 
@@ -148,6 +154,8 @@ async def _run_pipeline(job_id: str, store_id: str, image_url: str, target_langu
         _update_job_status(job_id, "failed", str(exc))
 
 
+# ── Routes ───────────────────────────────────────────────────────────────
+
 @router.post("/", response_model=TranslateResponse)
 async def start_translation(req: TranslateRequest, background_tasks: BackgroundTasks):
     store_id, handle = _resolve_store(req.store_handle.strip())
@@ -156,7 +164,7 @@ async def start_translation(req: TranslateRequest, background_tasks: BackgroundT
         raise HTTPException(401, "Store not authenticated or token expired")
     ok, used, limit = _check_quota(store_id)
     if not ok:
-        raise HTTPException(402, f"Monthly quota exceeded ({used}/{limit}).")
+        raise HTTPException(402, f"Monthly quota exceeded ({used}/{limit}). Please upgrade your plan.")
     job_id = _create_job(store_id, req.product_id, req.image_url, req.target_languages)
     background_tasks.add_task(_run_pipeline, job_id, store_id, req.image_url, req.target_languages)
     return TranslateResponse(job_id=job_id)
@@ -172,7 +180,7 @@ async def start_batch_translation(req: BatchTranslateRequest, background_tasks: 
         raise HTTPException(401, "Store not authenticated or token expired")
     ok, used, limit = _check_quota(store_id)
     if not ok:
-        raise HTTPException(402, f"Monthly quota exceeded ({used}/{limit}).")
+        raise HTTPException(402, f"Monthly quota exceeded ({used}/{limit}). Please upgrade your plan.")
     job_ids: list[str] = []
     for image_url in req.image_urls:
         job_id = _create_job(store_id, req.product_id, image_url, req.target_languages)

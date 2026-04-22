@@ -125,3 +125,25 @@ async def callback(code: str, handle: str):
 
     frontend_url = _env("FRONTEND_URL") or "http://localhost:3000"
     return RedirectResponse(f"{frontend_url}?shop={handle}")
+
+
+@router.get("/reauth-url")
+async def reauth_url(handle: str = ""):
+    """Return the OAuth URL for re-authentication when token expires."""
+    if not handle:
+        from backend.db.connection import get_connection
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT handle FROM imagelingo.stores ORDER BY updated_at DESC LIMIT 1")
+                row = cur.fetchone()
+        if row:
+            handle = row[0]
+    if not handle:
+        raise HTTPException(400, "No store found. Please install the app first.")
+    app_key = _env("SHOPLINE_APP_KEY")
+    redirect_uri = _env("SHOPLINE_REDIRECT_URI")
+    auth_url = (
+        f"https://{handle}.myshopline.com/admin/oauth-web/#/oauth/authorize"
+        f"?appKey={app_key}&responseType=code&scope={SCOPES}&redirectUri={redirect_uri}"
+    )
+    return {"auth_url": auth_url, "handle": handle}
