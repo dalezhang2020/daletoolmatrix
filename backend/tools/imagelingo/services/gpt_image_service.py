@@ -24,17 +24,17 @@ AZURE_DEPLOYMENT = os.environ.get("AZURE_OPENAI_IMAGE_DEPLOYMENT", "gpt-image-1.
 SOURCE_MAX_DIM = int(os.environ.get("IMAGELINGO_SOURCE_MAX_DIM", "1024"))
 
 PROMPT_TEMPLATE = (
-    "You are a professional product image localizer. "
-    "Translate ALL visible text in this product image into {target_lang}. "
-    "\n\nCRITICAL RULES:\n"
-    "1. Every single character must be correct and readable — NO garbled, blurry, or wrong characters.\n"
-    "2. Use proper {target_lang} typography. For Chinese: use standard Simplified Chinese (简体中文) characters only.\n"
-    "3. Keep the EXACT same visual layout, colors, fonts style, sizes, and positions.\n"
-    "4. Preserve all non-text elements (logos, icons, photos, graphics) completely unchanged.\n"
-    "5. If a word is a brand name (like 'Rollo'), keep it in the original language.\n"
-    "6. Make sure the translated text is natural and grammatically correct in {target_lang}.\n"
-    "7. Pay extra attention to character accuracy — double-check every character before rendering.\n"
-    "\nOutput the final translated image."
+    "ONLY replace the text in this image — do NOT change anything else. "
+    "Translate all visible text into {target_lang}. "
+    "\n\nSTRICT RULES:\n"
+    "1. The image layout, product photos, graphics, colors, and positions must remain PIXEL-PERFECT identical to the original.\n"
+    "2. ONLY modify the text regions — replace English text with {target_lang} translation.\n"
+    "3. Keep the same font style, size, weight, and color for each text element.\n"
+    "4. Brand names (like product names, logos) must stay in the original language.\n"
+    "5. Every translated character must be correct and clearly readable — no garbled or wrong characters.\n"
+    "6. For Chinese: use standard Simplified Chinese (简体中文) only.\n"
+    "7. Do NOT move, resize, crop, or reposition any image element.\n"
+    "\nThis is a text replacement task, NOT an image regeneration task."
 )
 
 _client = None
@@ -126,28 +126,59 @@ async def translate_image(
     # Step 1: Download and resize
     image_bytes = _download_and_resize(image_url)
 
-    # Step 2: Call SDK images.edit() (auto-retries 429/5xx)
-    client = _get_client()
-    t0 = time.perf_counter()
-    logger.info("images.edit: model=%s, target=%s, quality=%s, size=%s, %d bytes",
-                AZURE_DEPLOYMENT, target_language, azure_quality, size, len(image_bytes))
+    # Step 2: Call Azure REST API /images/edits with input_fidelity=high
+    # (SDK doesn't support input_fidelity, so we use REST directly)
+    import httpx
 
-    import asyncio
-    result = await asyncio.to_thread(
-        client.images.edit,
-        model=AZURE_DEPLOYMENT,
-        image=("source.png", image_bytes, "image/png"),
-        prompt=prompt,
-        n=1,
-        size=size,
-        quality=azure_quality,
-    )
+    endpoint = AZURE_ENDPOINT.rstrip("/")
+    for suffix in ("/openai/v1", "/v1"):
+        if endpoint.endswith(suffix):
+            endpoint = endpoint[: -len(suffix)]
+            break
+
+    edit_url = f"{endpoint}/openai/deployments/{AZURE_DEPLOYMENT}/images/edits?api-version=2025-04-01-preview"
+
+    t0 = time.perf_counter()
+    logger.info("images/edits REST: model=%s, target=%s, quality=%s, fidelity=high, %d bytes",
+                AZURE_DEPLOYMENT, target_language, azure_quality, len(image_bytes))
+
+    max_retries = 3
+    resp = None
+    async with httpx.AsyncClient(timeout=180) as http_client:
+        for attempt in range(max_retries):
+            resp = await http_client.post(
+                edit_url,
+                files={"image": ("source.png", image_bytes, "image/png")},
+                data={
+                    "prompt": prompt,
+                    "n": "1",
+                    "size": size,
+                    "quality": azure_quality,
+                    "input_fidelity": "high",
+                },
+                headers={"api-key": AZURE_API_KEY},
+            )
+            if resp.status_code == 200:
+                break
+            if resp.status_code in (429, 500, 502, 503) and attempt < max_retries - 1:
+                import asyncio as _aio
+                wait = (attempt + 1) * 10
+                logger.warning("Azure %d on attempt %d, retrying in %ds", resp.status_code, attempt + 1, wait)
+                await _aio.sleep(wait)
+                continue
+            break
 
     elapsed = time.perf_counter() - t0
-    logger.info("images.edit completed in %.1fs", elapsed)
+    logger.info("images/edits completed in %.1fs (status=%d, attempts=%d)", elapsed, resp.status_code if resp else 0, attempt + 1)
+
+    if not resp or resp.status_code != 200:
+        detail = resp.text[:300] if resp else "No response"
+        raise ValueError(f"GPT Image edit failed ({resp.status_code if resp else 0}): {detail}")
+
+    result = resp.json()
 
     # Step 3: Decode result
-    b64_data = result.data[0].b64_json
+    b64_data = result.get("data", [{}])[0].get("b64_json")
     if not b64_data:
         raise ValueError("GPT Image edit returned no image data")
     image_result = base64.b64decode(b64_data)
