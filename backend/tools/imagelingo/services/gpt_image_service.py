@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import time
 import uuid
 import urllib.request
 
@@ -20,6 +21,8 @@ AZURE_ENDPOINT = os.environ.get(
 AZURE_API_KEY = os.environ.get("AZURE_OPENAI_API_KEY", "")
 AZURE_DEPLOYMENT = os.environ.get("AZURE_OPENAI_IMAGE_DEPLOYMENT", "gpt-image-2-1")
 AZURE_API_VERSION = "2025-04-01-preview"
+AZURE_IMAGE_QUALITY = os.environ.get("AZURE_OPENAI_IMAGE_QUALITY", "medium")
+SOURCE_MAX_DIM = int(os.environ.get("IMAGELINGO_SOURCE_MAX_DIM", "1024"))
 
 PROMPT_TEMPLATE = (
     "Translate ALL visible text in this product image into {target_lang}. "
@@ -32,6 +35,7 @@ PROMPT_TEMPLATE = (
 
 def _download_image(url: str) -> bytes:
     """Download image from URL, return bytes. Resize to max 1024px for faster processing."""
+    t0 = time.perf_counter()
     req = urllib.request.Request(url, headers={"User-Agent": "ImageLingo/1.0"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         raw = resp.read()
@@ -41,7 +45,7 @@ def _download_image(url: str) -> bytes:
         from PIL import Image
         from io import BytesIO
         img = Image.open(BytesIO(raw))
-        max_dim = 1024
+        max_dim = SOURCE_MAX_DIM
         if max(img.size) > max_dim:
             ratio = max_dim / max(img.size)
             new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
@@ -50,8 +54,13 @@ def _download_image(url: str) -> bytes:
             img = img.convert("RGB")
         buf = BytesIO()
         img.save(buf, format="PNG", optimize=True)
-        return buf.getvalue()
+        out = buf.getvalue()
+        logger.info("Source download+resize completed in %.2fs (%d -> %d bytes, max_dim=%d)",
+                    time.perf_counter() - t0, len(raw), len(out), max_dim)
+        return out
     except Exception:
+        logger.info("Source download completed in %.2fs (%d bytes, resize skipped)",
+                    time.perf_counter() - t0, len(raw))
         return raw
 
 
@@ -73,6 +82,8 @@ def _build_edit_url(raw_endpoint: str) -> str:
 async def translate_image(
     image_url: str,
     target_language: str,
+    quality: str = "medium",
+    size: str = "1024x1024",
 ) -> str:
     """Translate text in an image using Azure OpenAI GPT-image-2 edit API.
 
@@ -99,6 +110,7 @@ async def translate_image(
     logger.info("Calling GPT Image edit: deployment=%s, target=%s, image_size=%d bytes",
                 AZURE_DEPLOYMENT, target_language, len(image_bytes))
 
+    t_azure = time.perf_counter()
     async with httpx.AsyncClient(timeout=180) as client:
         files = {
             "image": ("source.png", image_bytes, "image/png"),
@@ -106,14 +118,16 @@ async def translate_image(
         data = {
             "prompt": prompt,
             "n": "1",
-            "size": "1024x1024",
-            "quality": "medium",
+            "size": size,
+            "quality": quality,
         }
         headers = {
             "api-key": api_key,
         }
 
         resp = await client.post(edit_url, files=files, data=data, headers=headers)
+    logger.info("GPT Image request completed in %.2fs (status=%d, quality=%s, size=%s)",
+                time.perf_counter() - t_azure, resp.status_code, quality, size)
 
     if resp.status_code != 200:
         error_detail = resp.text[:300]
@@ -155,8 +169,11 @@ async def translate_image(
             date=datetime.datetime.now(datetime.timezone.utc),
         )
 
+        t_s3 = time.perf_counter()
         async with _httpx.AsyncClient(timeout=30) as s3_client:
             s3_resp = await s3_client.put(signed["url"], headers=signed["headers"], content=image_result_bytes)
+        logger.info("Translated image S3 upload completed in %.2fs (status=%d)",
+                    time.perf_counter() - t_s3, s3_resp.status_code)
 
         if s3_resp.status_code in (200, 201):
             # Return presigned URL (private bucket, 24h expiry)

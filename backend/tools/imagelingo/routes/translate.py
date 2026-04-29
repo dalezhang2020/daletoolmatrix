@@ -35,6 +35,8 @@ class TranslateRequest(BaseModel):
     product_id: str
     image_url: str
     target_languages: list[str]
+    output_quality: str = "medium"   # low | medium | high
+    output_size: str = "1024x1024"   # e.g. 1024x1024, 1024x1536
 
 
 class TranslateResponse(BaseModel):
@@ -165,18 +167,19 @@ def _check_quota(store_id: str) -> tuple[bool, int, int]:
 
 # ── Pipeline ─────────────────────────────────────────────────────────────
 
-async def _run_pipeline(job_id: str, store_id: str, image_url: str, target_languages: list[str]):
+async def _run_pipeline(job_id: str, store_id: str, image_url: str, target_languages: list[str],
+                       quality: str = "medium", size: str = "1024x1024"):
+    import time
+    t0 = time.perf_counter()
     _update_job_status(job_id, "processing")
     try:
-        # Primary: Azure GPT Image 2 (synchronous, reliable)
-        # Fallback: Lovart (async polling, less reliable)
         use_gpt = bool(os.environ.get("AZURE_OPENAI_API_KEY"))
 
         if use_gpt:
             from backend.tools.imagelingo.services.gpt_image_service import translate_image as gpt_translate
             for lang in target_languages:
                 lang_name = LANG_NAMES.get(lang.upper(), lang)
-                output_url = await gpt_translate(image_url, lang_name)
+                output_url = await gpt_translate(image_url, lang_name, quality=quality, size=size)
                 _save_translated_image(job_id, lang, output_url)
         else:
             from backend.tools.imagelingo.services.lovart_service import LovartService
@@ -188,9 +191,11 @@ async def _run_pipeline(job_id: str, store_id: str, image_url: str, target_langu
 
         _update_job_status(job_id, "done")
         _increment_usage(store_id)
+        logger.info("Pipeline done for job %s in %.2fs", job_id, time.perf_counter() - t0)
     except Exception as exc:
         error_msg = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
         logger.error("Pipeline failed for job %s: %s", job_id, error_msg)
+        logger.error("Pipeline failed after %.2fs for job %s", time.perf_counter() - t0, job_id)
         _update_job_status(job_id, "failed", error_msg)
 
 
@@ -206,7 +211,8 @@ async def start_translation(req: TranslateRequest, background_tasks: BackgroundT
     if not ok:
         raise HTTPException(402, f"Monthly quota exceeded ({used}/{limit}). Please upgrade your plan.")
     job_id = _create_job(store_id, req.product_id, req.image_url, req.target_languages)
-    background_tasks.add_task(_run_pipeline, job_id, store_id, req.image_url, req.target_languages)
+    background_tasks.add_task(_run_pipeline, job_id, store_id, req.image_url, req.target_languages,
+                              req.output_quality, req.output_size)
     return TranslateResponse(job_id=job_id)
 
 
