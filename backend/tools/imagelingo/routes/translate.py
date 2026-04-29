@@ -18,6 +18,7 @@ LANG_NAMES = {
     "EN": "English", "EN-US": "English", "EN-GB": "English",
     "DE": "German", "JA": "Japanese", "KO": "Korean",
     "FR": "French", "ES": "Spanish",
+    "ZH-CN": "Simplified Chinese", "ZH": "Simplified Chinese",
 }
 
 # Credit system: each store gets 100 credits/month, each image costs 20 credits
