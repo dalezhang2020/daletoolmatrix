@@ -189,7 +189,9 @@ async def _run_pipeline(job_id: str, store_id: str, image_url: str, target_langu
         _update_job_status(job_id, "done")
         _increment_usage(store_id)
     except Exception as exc:
-        _update_job_status(job_id, "failed", str(exc))
+        error_msg = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+        logger.error("Pipeline failed for job %s: %s", job_id, error_msg)
+        _update_job_status(job_id, "failed", error_msg)
 
 
 # ── Routes ───────────────────────────────────────────────────────────────

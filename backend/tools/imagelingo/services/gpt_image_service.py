@@ -78,7 +78,10 @@ async def translate_image(
     prompt = PROMPT_TEMPLATE.format(target_lang=target_language)
 
     # Azure image edit API uses multipart/form-data
-    async with httpx.AsyncClient(timeout=120) as client:
+    logger.info("Calling GPT Image edit: deployment=%s, target=%s, image_size=%d bytes",
+                AZURE_DEPLOYMENT, target_language, len(image_bytes))
+
+    async with httpx.AsyncClient(timeout=180) as client:
         files = {
             "image": ("source.png", image_bytes, "image/png"),
         }
