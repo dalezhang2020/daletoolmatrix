@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import logging
 import os
+import uuid
 import urllib.request
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,21 @@ def _download_image(url: str) -> bytes:
         return resp.read()
 
 
+def _build_edit_url(raw_endpoint: str) -> str:
+    """Normalize AZURE_OPENAI_ENDPOINT to Azure image-edits REST URL."""
+    endpoint = raw_endpoint.strip().rstrip("/")
+    if endpoint.endswith("/openai/v1"):
+        endpoint = endpoint[: -len("/openai/v1")]
+    elif endpoint.endswith("/v1"):
+        endpoint = endpoint[: -len("/v1")]
+    if not endpoint.endswith("/openai"):
+        endpoint = f"{endpoint}/openai"
+    return (
+        f"{endpoint}/deployments/{AZURE_DEPLOYMENT}"
+        f"/images/edits?api-version={AZURE_API_VERSION}"
+    )
+
+
 async def translate_image(
     image_url: str,
     target_language: str,
@@ -54,20 +70,9 @@ async def translate_image(
     # Download the source image
     image_bytes = _download_image(image_url)
 
-    # Build the edit URL
-    # AZURE_ENDPOINT is like: https://foundry-llm-zg.services.ai.azure.com/openai/v1
-    # Azure REST API path: {base}/openai/deployments/{deployment}/images/edits
-    endpoint = AZURE_ENDPOINT.rstrip("/")
-    # Strip /v1 or /openai/v1 suffix to get the bare base URL
-    for suffix in ("/openai/v1", "/v1"):
-        if endpoint.endswith(suffix):
-            endpoint = endpoint[: -len(suffix)]
-            break
-
-    edit_url = (
-        f"{endpoint}/openai/deployments/{AZURE_DEPLOYMENT}"
-        f"/images/edits?api-version={AZURE_API_VERSION}"
-    )
+    # Build Azure image-edits URL from endpoint variants:
+    # https://xxx.azure.com, https://xxx.azure.com/openai, or https://xxx.azure.com/openai/v1
+    edit_url = _build_edit_url(AZURE_ENDPOINT)
     logger.info("GPT Image edit URL: %s", edit_url)
 
     prompt = PROMPT_TEMPLATE.format(target_lang=target_language)
@@ -148,8 +153,7 @@ async def translate_image(
         logger.warning("S3 upload failed (%d), falling back to local", s3_resp.status_code)
 
     # Fallback: save locally
-    import uuid as _uuid
-    image_id = str(_uuid.uuid4())[:12]
+    image_id = str(uuid.uuid4())[:12]
     cache_dir = "/tmp/imagelingo_results"
     os.makedirs(cache_dir, exist_ok=True)
     file_path = f"{cache_dir}/{image_id}.png"
