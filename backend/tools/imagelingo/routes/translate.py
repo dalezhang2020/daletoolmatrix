@@ -16,9 +16,9 @@ logger = logging.getLogger(__name__)
 
 LANG_NAMES = {
     "EN": "English", "EN-US": "English", "EN-GB": "English",
-    "DE": "German", "JA": "Japanese", "KO": "Korean",
+    "DE": "German", "JA": "Japanese",
     "FR": "French", "ES": "Spanish",
-    "ZH-CN": "Simplified Chinese", "ZH": "Simplified Chinese",
+    "VI": "Vietnamese", "ID": "Indonesian",
 }
 
 # Credit system: each store gets 100 credits/month, each image costs 20 credits
