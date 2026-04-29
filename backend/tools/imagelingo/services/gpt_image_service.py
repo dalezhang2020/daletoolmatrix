@@ -54,16 +54,21 @@ async def translate_image(
     # Download the source image
     image_bytes = _download_image(image_url)
 
-    # Determine the base endpoint (strip /v1 suffix if present for Azure REST API)
-    endpoint = AZURE_ENDPOINT.rstrip("/")
-    if endpoint.endswith("/v1"):
-        endpoint = endpoint[:-3]
-
     # Build the edit URL
+    # AZURE_ENDPOINT is like: https://foundry-llm-zg.services.ai.azure.com/openai/v1
+    # Azure REST API path: {base}/openai/deployments/{deployment}/images/edits
+    endpoint = AZURE_ENDPOINT.rstrip("/")
+    # Strip /v1 or /openai/v1 suffix to get the bare base URL
+    for suffix in ("/openai/v1", "/v1"):
+        if endpoint.endswith(suffix):
+            endpoint = endpoint[: -len(suffix)]
+            break
+
     edit_url = (
         f"{endpoint}/openai/deployments/{AZURE_DEPLOYMENT}"
         f"/images/edits?api-version={AZURE_API_VERSION}"
     )
+    logger.info("GPT Image edit URL: %s", edit_url)
 
     prompt = PROMPT_TEMPLATE.format(target_lang=target_language)
 
