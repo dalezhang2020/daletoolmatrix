@@ -110,28 +110,44 @@ async def translate_image(
                 AZURE_DEPLOYMENT, target_language, len(image_bytes))
 
     t_azure = time.perf_counter()
+    max_retries = 3
+    resp = None
+
     async with httpx.AsyncClient(timeout=180) as client:
-        files = {
-            "image": ("source.png", image_bytes, "image/png"),
-        }
-        data = {
-            "prompt": prompt,
-            "n": "1",
-            "size": size,
-            "quality": azure_quality,
-        }
-        headers = {
-            "api-key": api_key,
-        }
+        files_data = ("source.png", image_bytes, "image/png")
+        headers = {"api-key": api_key}
 
-        resp = await client.post(edit_url, files=files, data=data, headers=headers)
-    logger.info("GPT Image request completed in %.2fs (status=%d, quality=%s, size=%s)",
-                time.perf_counter() - t_azure, resp.status_code, quality, size)
+        for attempt in range(max_retries):
+            # httpx consumes file objects, rebuild each attempt
+            resp = await client.post(
+                edit_url,
+                files={"image": files_data},
+                data={"prompt": prompt, "n": "1", "size": size, "quality": azure_quality},
+                headers=headers,
+            )
 
-    if resp.status_code != 200:
-        error_detail = resp.text[:300]
-        logger.error("GPT Image edit failed (%d): %s", resp.status_code, error_detail)
-        raise ValueError(f"GPT Image edit failed ({resp.status_code}): {error_detail}")
+            if resp.status_code == 200:
+                break
+
+            # Retry on 429 (rate limit) and 5xx (server errors)
+            if resp.status_code in (429, 500, 502, 503) and attempt < max_retries - 1:
+                wait = (attempt + 1) * 10  # 10s, 20s
+                logger.warning("GPT Image %d on attempt %d, retrying in %ds...",
+                               resp.status_code, attempt + 1, wait)
+                import asyncio
+                await asyncio.sleep(wait)
+                continue
+
+            break
+
+    elapsed_azure = time.perf_counter() - t_azure
+    logger.info("GPT Image request completed in %.2fs (status=%d, quality=%s, size=%s, attempts=%d)",
+                elapsed_azure, resp.status_code if resp else 0, quality, size, attempt + 1)
+
+    if not resp or resp.status_code != 200:
+        error_detail = resp.text[:300] if resp else "No response"
+        logger.error("GPT Image edit failed (%d): %s", resp.status_code if resp else 0, error_detail)
+        raise ValueError(f"GPT Image edit failed ({resp.status_code if resp else 0}): {error_detail}")
 
     result = resp.json()
     b64_data = result.get("data", [{}])[0].get("b64_json")
