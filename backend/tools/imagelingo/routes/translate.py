@@ -23,7 +23,7 @@ LANG_NAMES = {
 
 # Credit system: each store gets 100 credits/month, each image costs 20 credits
 CREDITS_PER_IMAGE = 20
-DEFAULT_CREDITS_LIMIT = 100
+DEFAULT_CREDITS_LIMIT = 200  # 10 images per billing cycle
 
 router = APIRouter()
 
@@ -145,23 +145,34 @@ def _increment_usage(store_id: str):
 
 
 def _check_quota(store_id: str) -> tuple[bool, int, int]:
-    """Returns (allowed, credits_used, credits_limit)."""
+    """Returns (allowed, credits_used, credits_limit).
+    Falls back to DEFAULT_CREDITS_LIMIT when no subscription record exists.
+    """
     period = _get_billing_period(store_id)
     with get_connection() as conn:
         with conn.cursor() as cur:
+            # Try to get limit from subscriptions table
             cur.execute(
-                """SELECT COALESCE(ul.credits_used, 0), COALESCE(s.credits_limit, %s)
+                """SELECT COALESCE(s.credits_limit, %s)
                    FROM imagelingo.subscriptions s
-                   LEFT JOIN imagelingo.usage_logs ul ON ul.store_id = s.store_id AND ul.month = %s
                    WHERE s.store_id = %s""",
-                (DEFAULT_CREDITS_LIMIT, period, store_id),
+                (DEFAULT_CREDITS_LIMIT, store_id),
             )
-            row = cur.fetchone()
-    if not row:
-        return True, 0, DEFAULT_CREDITS_LIMIT
-    used, limit = row
+            sub_row = cur.fetchone()
+            limit = sub_row[0] if sub_row else DEFAULT_CREDITS_LIMIT
+
+            # Get current usage
+            cur.execute(
+                """SELECT COALESCE(credits_used, 0)
+                   FROM imagelingo.usage_logs
+                   WHERE store_id = %s AND month = %s""",
+                (store_id, period),
+            )
+            usage_row = cur.fetchone()
+            used = usage_row[0] if usage_row else 0
+
     if limit <= 0:
-        return True, used, 0  # unlimited
+        return True, used, 0  # unlimited plan
     return used + CREDITS_PER_IMAGE <= limit, used, limit
 
 
