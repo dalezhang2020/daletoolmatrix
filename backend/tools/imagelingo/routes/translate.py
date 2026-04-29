@@ -1,7 +1,8 @@
-"""Translation pipeline routes — OCR → Lovart (translate+render) → return image URL."""
+"""Translation pipeline routes — GPT Image / Lovart → return translated image URL."""
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 
@@ -164,15 +165,26 @@ def _check_quota(store_id: str) -> tuple[bool, int, int]:
 # ── Pipeline ─────────────────────────────────────────────────────────────
 
 async def _run_pipeline(job_id: str, store_id: str, image_url: str, target_languages: list[str]):
-    from backend.tools.imagelingo.services.lovart_service import LovartService
-
     _update_job_status(job_id, "processing")
     try:
-        lovart = LovartService()
-        for lang in target_languages:
-            lang_name = LANG_NAMES.get(lang.upper(), lang)
-            output_url = await lovart.translate_image(image_url, lang_name)
-            _save_translated_image(job_id, lang, output_url)
+        # Primary: Azure GPT Image 2 (synchronous, reliable)
+        # Fallback: Lovart (async polling, less reliable)
+        use_gpt = bool(os.environ.get("AZURE_OPENAI_API_KEY"))
+
+        if use_gpt:
+            from backend.tools.imagelingo.services.gpt_image_service import translate_image as gpt_translate
+            for lang in target_languages:
+                lang_name = LANG_NAMES.get(lang.upper(), lang)
+                output_url = await gpt_translate(image_url, lang_name)
+                _save_translated_image(job_id, lang, output_url)
+        else:
+            from backend.tools.imagelingo.services.lovart_service import LovartService
+            lovart = LovartService()
+            for lang in target_languages:
+                lang_name = LANG_NAMES.get(lang.upper(), lang)
+                output_url = await lovart.translate_image(image_url, lang_name)
+                _save_translated_image(job_id, lang, output_url)
+
         _update_job_status(job_id, "done")
         _increment_usage(store_id)
     except Exception as exc:
@@ -394,3 +406,20 @@ async def upload_image(file: UploadFile = File(...)):
         raise HTTPException(502, "Image upload returned no URL")
 
     return {"url": url}
+
+
+# ── Serve locally-cached translated images (GPT Image fallback) ──────────────
+
+from fastapi.responses import FileResponse
+
+@router.get("/results/{filename}")
+async def serve_result_image(filename: str):
+    """Serve a translated image from the local cache (used when CDN upload fails)."""
+    import re
+    # Sanitize filename to prevent path traversal
+    if not re.match(r'^[a-f0-9]{12}\.png$', filename):
+        raise HTTPException(400, "Invalid filename")
+    file_path = f"/tmp/imagelingo_results/{filename}"
+    if not os.path.exists(file_path):
+        raise HTTPException(404, "Image not found")
+    return FileResponse(file_path, media_type="image/png")
