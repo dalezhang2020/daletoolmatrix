@@ -24,11 +24,17 @@ AZURE_DEPLOYMENT = os.environ.get("AZURE_OPENAI_IMAGE_DEPLOYMENT", "gpt-image-1.
 SOURCE_MAX_DIM = int(os.environ.get("IMAGELINGO_SOURCE_MAX_DIM", "1024"))
 
 PROMPT_TEMPLATE = (
+    "You are a professional product image localizer. "
     "Translate ALL visible text in this product image into {target_lang}. "
-    "Keep the EXACT same layout, background, colors, fonts, and visual design. "
-    "Replace every piece of text with its accurate {target_lang} translation. "
-    "Preserve all non-text elements (logos, icons, product photos) unchanged. "
-    "Output the final translated image."
+    "\n\nCRITICAL RULES:\n"
+    "1. Every single character must be correct and readable — NO garbled, blurry, or wrong characters.\n"
+    "2. Use proper {target_lang} typography. For Chinese: use standard Simplified Chinese (简体中文) characters only.\n"
+    "3. Keep the EXACT same visual layout, colors, fonts style, sizes, and positions.\n"
+    "4. Preserve all non-text elements (logos, icons, photos, graphics) completely unchanged.\n"
+    "5. If a word is a brand name (like 'Rollo'), keep it in the original language.\n"
+    "6. Make sure the translated text is natural and grammatically correct in {target_lang}.\n"
+    "7. Pay extra attention to character accuracy — double-check every character before rendering.\n"
+    "\nOutput the final translated image."
 )
 
 _client = None
@@ -114,7 +120,7 @@ async def translate_image(
     if not AZURE_API_KEY:
         raise ValueError("AZURE_OPENAI_API_KEY is not set")
 
-    azure_quality = {"fast": "low", "low": "low", "medium": "medium", "high": "high"}.get(quality, "medium")
+    azure_quality = {"fast": "medium", "low": "medium", "medium": "medium", "high": "high"}.get(quality, "medium")
     prompt = PROMPT_TEMPLATE.format(target_lang=target_language)
 
     # Step 1: Download and resize
