@@ -85,12 +85,11 @@ async def translate_image(
     quality: str = "medium",
     size: str = "1024x1024",
 ) -> str:
-    """Translate text in an image using Azure OpenAI GPT-image-2 edit API.
-
-    Returns: URL of the translated image (uploaded to a temporary hosting).
-    Since Azure returns base64, we save it and return a data URI or upload it.
-    """
+    """Translate text in an image using Azure OpenAI GPT-image-2 edit API."""
     import httpx
+
+    # Map frontend quality names to Azure API values
+    azure_quality = {"fast": "low", "low": "low", "medium": "medium", "high": "high"}.get(quality, "medium")
 
     api_key = AZURE_API_KEY
     if not api_key:
@@ -119,7 +118,7 @@ async def translate_image(
             "prompt": prompt,
             "n": "1",
             "size": size,
-            "quality": quality,
+            "quality": azure_quality,
         }
         headers = {
             "api-key": api_key,
