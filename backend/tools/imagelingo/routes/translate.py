@@ -370,11 +370,11 @@ async def upload_image(file: UploadFile = File(...)):
     if len(content) > 10 * 1024 * 1024:
         raise HTTPException(400, "File too large (max 10MB)")
 
-    # Standardize image: resize if too large (max 1500px on longest side)
+    # Standardize image: resize to max 1024px (matches GPT Image output, faster processing)
     try:
         from PIL import Image
         img = Image.open(BytesIO(content))
-        max_dim = 1500
+        max_dim = 1024
         if max(img.size) > max_dim:
             ratio = max_dim / max(img.size)
             new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))

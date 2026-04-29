@@ -31,10 +31,28 @@ PROMPT_TEMPLATE = (
 
 
 def _download_image(url: str) -> bytes:
-    """Download image from URL, return bytes."""
+    """Download image from URL, return bytes. Resize to max 1024px for faster processing."""
     req = urllib.request.Request(url, headers={"User-Agent": "ImageLingo/1.0"})
     with urllib.request.urlopen(req, timeout=30) as resp:
-        return resp.read()
+        raw = resp.read()
+
+    # Resize to 1024px max — matches GPT Image output size, speeds up API call
+    try:
+        from PIL import Image
+        from io import BytesIO
+        img = Image.open(BytesIO(raw))
+        max_dim = 1024
+        if max(img.size) > max_dim:
+            ratio = max_dim / max(img.size)
+            new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+            img = img.resize(new_size, Image.LANCZOS)
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
+        buf = BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        return buf.getvalue()
+    except Exception:
+        return raw
 
 
 def _build_edit_url(raw_endpoint: str) -> str:
@@ -89,7 +107,7 @@ async def translate_image(
             "prompt": prompt,
             "n": "1",
             "size": "1024x1024",
-            "quality": "high",
+            "quality": "medium",
         }
         headers = {
             "api-key": api_key,
