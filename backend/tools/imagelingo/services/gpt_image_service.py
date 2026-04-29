@@ -107,19 +107,24 @@ def _download_and_prepare(url: str) -> tuple[bytes, tuple[int, int], tuple[int, 
 
 
 def _restore_original_size(result_bytes: bytes, orig_size: tuple[int, int], api_size: tuple[int, int]) -> bytes:
-    """Resize result back to original dimensions."""
+    """Resize result back to original dimensions. Uses JPEG for speed."""
     from PIL import Image
 
     if orig_size == api_size:
         return result_bytes
 
+    t0 = time.perf_counter()
     img = Image.open(BytesIO(result_bytes))
-    img = img.resize(orig_size, Image.LANCZOS)
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+    img = img.resize(orig_size, Image.BILINEAR)  # BILINEAR faster than LANCZOS for upscale
 
     buf = BytesIO()
-    img.save(buf, format="PNG", optimize=True)
-    logger.info("Restored: %dx%d → %dx%d", api_size[0], api_size[1], orig_size[0], orig_size[1])
-    return buf.getvalue()
+    img.save(buf, format="JPEG", quality=92, optimize=False)  # no optimize = faster
+    out = buf.getvalue()
+    logger.info("Restored: %dx%d → %dx%d in %.2fs (%d bytes)",
+                api_size[0], api_size[1], orig_size[0], orig_size[1], time.perf_counter() - t0, len(out))
+    return out
 
 
 # ── Step 1: OCR + Translate via GPT-4o vision ───────────────────────────
@@ -286,12 +291,12 @@ async def _upload_to_s3(image_bytes: bytes, target_language: str) -> str | None:
 
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     uid = str(uuid.uuid4())[:8]
-    s3_key = f"imagelingo/translated/{ts}_{uid}_{target_language}.png"
+    s3_key = f"imagelingo/translated/{ts}_{uid}_{target_language}.jpg"
 
     signed = sign_s3_upload(
         file_bytes=image_bytes, bucket=cfg["bucket"], object_key=s3_key,
         region=cfg["region"], access_key=cfg["access_key"],
-        secret_key=cfg["secret_key"], content_type="image/png",
+        secret_key=cfg["secret_key"], content_type="image/jpeg",
         date=datetime.datetime.now(datetime.timezone.utc),
     )
     async with httpx.AsyncClient(timeout=30) as client:
@@ -338,9 +343,9 @@ async def translate_image(
     # Step 4: GPT Image edit (~35-45s)
     result_bytes = await _call_image_edit(image_bytes, prompt, azure_quality, api_size_str)
 
-    # Step 5: Restore original dimensions
+    # Step 5: Restore original dimensions (run in thread - CPU bound)
     if orig_size != api_size:
-        result_bytes = _restore_original_size(result_bytes, orig_size, api_size)
+        result_bytes = await asyncio.to_thread(_restore_original_size, result_bytes, orig_size, api_size)
 
     logger.info("AI pipeline done: %.1fs (orig=%dx%d)", time.perf_counter() - t_total, orig_size[0], orig_size[1])
 
