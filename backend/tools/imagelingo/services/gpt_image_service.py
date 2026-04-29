@@ -35,27 +35,131 @@ def _get_client():
     return _client
 
 
-def _download_and_resize(url: str, max_dim: int = 1024) -> bytes:
-    """Download image, resize, compress as JPEG."""
+# GPT-image-1.5 supported sizes
+API_SIZES = {
+    "square": (1024, 1024),     # 1:1
+    "landscape": (1536, 1024),  # 3:2
+    "portrait": (1024, 1536),   # 2:3
+}
+# Max aspect ratio we can handle (beyond this, too much padding = bad results)
+MAX_ASPECT_RATIO = 2.5  # e.g. 2.5:1 or 1:2.5
+
+
+def _pick_api_size(w: int, h: int) -> tuple[int, int]:
+    """Pick the best API size for the given image dimensions."""
+    ratio = w / h
+    if ratio > 1.2:
+        return API_SIZES["landscape"]  # 1536x1024
+    elif ratio < 0.8:
+        return API_SIZES["portrait"]   # 1024x1536
+    else:
+        return API_SIZES["square"]     # 1024x1024
+
+
+def _download_and_prepare(url: str) -> tuple[bytes, tuple[int, int], tuple[int, int]]:
+    """Download image, pad to API-compatible aspect ratio, return (bytes, original_size, api_size).
+
+    Strategy: scale down to fit within API size, then pad with edge color (no crop, no loss).
+    After translation, the result is cropped back to remove padding.
+    """
+    from PIL import Image
+
     t0 = time.perf_counter()
     req = urllib.request.Request(url, headers={"User-Agent": "ImageLingo/1.0"})
     with urllib.request.urlopen(req, timeout=30) as resp:
         raw = resp.read()
-    try:
-        from PIL import Image
-        img = Image.open(BytesIO(raw))
-        if max(img.size) > max_dim:
-            ratio = max_dim / max(img.size)
-            img = img.resize((int(img.size[0] * ratio), int(img.size[1] * ratio)), Image.LANCZOS)
-        if img.mode in ("RGBA", "P"):
-            img = img.convert("RGB")
-        buf = BytesIO()
-        img.save(buf, format="JPEG", quality=85, optimize=True)
-        out = buf.getvalue()
-        logger.info("Download+resize %.2fs (%d→%d bytes)", time.perf_counter() - t0, len(raw), len(out))
-        return out
-    except Exception:
-        return raw
+
+    img = Image.open(BytesIO(raw))
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+
+    orig_w, orig_h = img.size
+    aspect = orig_w / orig_h
+
+    # Check aspect ratio limit
+    if aspect > MAX_ASPECT_RATIO or aspect < 1 / MAX_ASPECT_RATIO:
+        logger.warning("Image aspect ratio %.2f exceeds limit %.1f, may have quality issues", aspect, MAX_ASPECT_RATIO)
+
+    # Pick best API size
+    api_w, api_h = _pick_api_size(orig_w, orig_h)
+
+    # Scale image to fit within API size (maintain aspect ratio)
+    scale = min(api_w / orig_w, api_h / orig_h)
+    if scale < 1:
+        new_w = int(orig_w * scale)
+        new_h = int(orig_h * scale)
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+    else:
+        new_w, new_h = orig_w, orig_h
+        # If image is smaller than API size, scale up to use full resolution
+        scale_up = min(api_w / orig_w, api_h / orig_h)
+        if scale_up > 1:
+            new_w = int(orig_w * scale_up)
+            new_h = int(orig_h * scale_up)
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+
+    # Pad to exact API size with edge color (sample from image borders)
+    if new_w != api_w or new_h != api_h:
+        # Use the average color of the image edges as padding color
+        import numpy as np
+        arr = np.array(img)
+        edge_pixels = np.concatenate([
+            arr[0, :],      # top row
+            arr[-1, :],     # bottom row
+            arr[:, 0],      # left column
+            arr[:, -1],     # right column
+        ])
+        pad_color = tuple(int(c) for c in edge_pixels.mean(axis=0))
+
+        padded = Image.new("RGB", (api_w, api_h), pad_color)
+        # Center the image on the padded canvas
+        offset_x = (api_w - new_w) // 2
+        offset_y = (api_h - new_h) // 2
+        padded.paste(img, (offset_x, offset_y))
+        img = padded
+
+    buf = BytesIO()
+    img.save(buf, format="JPEG", quality=90, optimize=True)
+    out = buf.getvalue()
+
+    logger.info("Prepare %.2fs: orig=%dx%d → api=%dx%d (padded from %dx%d), %d bytes",
+                time.perf_counter() - t0, orig_w, orig_h, api_w, api_h, new_w, new_h, len(out))
+
+    return out, (orig_w, orig_h), (api_w, api_h)
+
+
+def _restore_original_size(result_bytes: bytes, orig_size: tuple[int, int], api_size: tuple[int, int]) -> bytes:
+    """Crop padding and resize result back to original dimensions."""
+    from PIL import Image
+
+    img = Image.open(BytesIO(result_bytes))
+    api_w, api_h = api_size
+    orig_w, orig_h = orig_size
+
+    # Calculate where the actual content is (center crop to remove padding)
+    scale = min(api_w / orig_w, api_h / orig_h)
+    if scale < 1:
+        content_w = int(orig_w * scale)
+        content_h = int(orig_h * scale)
+    else:
+        scale_up = min(api_w / orig_w, api_h / orig_h)
+        content_w = int(orig_w * scale_up)
+        content_h = int(orig_h * scale_up)
+
+    offset_x = (api_w - content_w) // 2
+    offset_y = (api_h - content_h) // 2
+
+    # Crop out the padding
+    cropped = img.crop((offset_x, offset_y, offset_x + content_w, offset_y + content_h))
+
+    # Resize back to original dimensions
+    if cropped.size != (orig_w, orig_h):
+        cropped = cropped.resize((orig_w, orig_h), Image.LANCZOS)
+
+    buf = BytesIO()
+    cropped.save(buf, format="PNG", optimize=True)
+    logger.info("Restored: %dx%d → crop %dx%d → resize %dx%d", api_w, api_h, content_w, content_h, orig_w, orig_h)
+    return buf.getvalue()
 
 
 # ── Step 1: OCR + Translate via GPT-4o vision ───────────────────────────
@@ -259,35 +363,43 @@ async def translate_image(
     quality: str = "high",
     size: str = "1024x1024",
 ) -> str:
-    """OCR-assisted image translation pipeline:
-    1. GPT-4o-mini vision → read all text + translate (fast, accurate, cheap)
-    2. Build precise prompt with exact translation table
-    3. GPT Image edit → render translations on image (uses the table, not guessing)
+    """OCR-assisted image translation pipeline with aspect ratio preservation:
+    1. Download + pad to API-compatible size (no cropping)
+    2. GPT-4o vision → OCR + translate
+    3. Build precise prompt with translation table
+    4. GPT Image edit → render translations
+    5. Crop padding + resize back to original dimensions
+    6. Upload to S3
     """
     if not AZURE_API_KEY:
         raise ValueError("AZURE_OPENAI_API_KEY is not set")
 
     t_total = time.perf_counter()
-    azure_quality = "high"  # always high for best text rendering
-    max_dim = 1024
+    azure_quality = "high"
 
-    # Step 1: Download image
-    image_bytes = _download_and_resize(image_url, max_dim=max_dim)
+    # Step 1: Download + pad to API size (preserves all content, no crop)
+    image_bytes, orig_size, api_size = _download_and_prepare(image_url)
+    api_size_str = f"{api_size[0]}x{api_size[1]}"
 
-    # Step 2: OCR + Translate (GPT-4o-mini, ~3-5s, very cheap)
+    # Step 2: OCR + Translate (GPT-4o, ~5-10s)
     t_ocr = time.perf_counter()
     pairs = await _ocr_and_translate(image_bytes, target_language)
     logger.info("OCR+translate: %.1fs, %d pairs", time.perf_counter() - t_ocr, len(pairs))
 
     # Step 3: Build precise prompt
     prompt = _build_prompt(target_language, pairs)
-    logger.info("Prompt length: %d chars, %d translation pairs", len(prompt), len(pairs))
+    logger.info("Prompt: %d chars, %d pairs", len(prompt), len(pairs))
 
-    # Step 4: GPT Image edit with precise prompt
-    result_bytes = await _call_image_edit(image_bytes, prompt, azure_quality, size)
-    logger.info("Total pipeline: %.1fs", time.perf_counter() - t_total)
+    # Step 4: GPT Image edit (uses padded image at API size)
+    result_bytes = await _call_image_edit(image_bytes, prompt, azure_quality, api_size_str)
 
-    # Step 5: Upload to S3
+    # Step 5: Restore original dimensions (crop padding + resize)
+    if orig_size != api_size:
+        result_bytes = _restore_original_size(result_bytes, orig_size, api_size)
+
+    logger.info("Total pipeline: %.1fs (orig=%dx%d)", time.perf_counter() - t_total, orig_size[0], orig_size[1])
+
+    # Step 6: Upload to S3
     s3_url = await _upload_to_s3(result_bytes, target_language)
     if s3_url:
         return s3_url
