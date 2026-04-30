@@ -171,6 +171,10 @@ async def callback(request: Request):
     )
     logger.info("Store upserted for handle=%s", handle)
 
-    # Redirect to Shopline frontend
-    frontend_url = _env("SHOPLINE_ZD_FRONTEND_URL")
-    return RedirectResponse(f"{frontend_url}?handle={handle}")
+    # Redirect back to the Shopline admin app page.
+    # Shopline will reload the app iframe, hitting /entry again.
+    # This time /entry finds a valid token and loads the frontend inside the iframe.
+    # This avoids iframe nesting issues that occur when redirecting directly to Vercel.
+    return RedirectResponse(
+        f"https://{handle}.myshopline.com/admin/apps/detail/{_env('SHOPLINE_ZD_APP_KEY')}"
+    )
