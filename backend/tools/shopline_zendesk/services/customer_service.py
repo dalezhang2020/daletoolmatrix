@@ -15,7 +15,7 @@ from backend.tools.shopline_zendesk.services import shopline_auth
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = 15.0  # seconds
-_API_VERSION = "v20250601"
+_API_VERSION = "v20260901"
 
 
 # ---------------------------------------------------------------------------
