@@ -60,17 +60,17 @@ async def zendesk_authorize(
 
     redirect_uri = _build_redirect_uri()
 
-    # Encode handle + subdomain into the state param
+    # Encode handle + subdomain into the state param (strip padding for URL safety)
     state_payload = json.dumps({"handle": handle, "subdomain": subdomain})
-    state = base64.urlsafe_b64encode(state_payload.encode()).decode()
+    state = base64.urlsafe_b64encode(state_payload.encode()).decode().rstrip("=")
 
     auth_url = (
         f"https://{subdomain}.zendesk.com/oauth/authorizations/new"
         f"?response_type=code"
         f"&redirect_uri={urllib.parse.quote(redirect_uri, safe='')}"
-        f"&client_id={client_id}"
+        f"&client_id={urllib.parse.quote(client_id, safe='')}"
         f"&scope=read"
-        f"&state={state}"
+        f"&state={urllib.parse.quote(state, safe='')}"
     )
 
     # Use JS to redirect the top-level window (break out of Shopline iframe)
@@ -98,9 +98,10 @@ async def zendesk_callback(
     3. Store tokens in the bindings table.
     4. Redirect back to the Shopline admin app page so the iframe reloads.
     """
-    # --- Decode state ---
+    # --- Decode state (add back padding stripped during encode) ---
     try:
-        state_json = base64.urlsafe_b64decode(state.encode()).decode()
+        padded = state + "=" * (-len(state) % 4)
+        state_json = base64.urlsafe_b64decode(padded.encode()).decode()
         state_data = json.loads(state_json)
         handle = state_data["handle"]
         subdomain = state_data["subdomain"]
