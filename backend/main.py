@@ -16,7 +16,6 @@ from backend.tools.shopline_zendesk.routes.shopline import binding as sz_binding
 from backend.tools.shopline_zendesk.routes.shopline import session as sz_session
 from backend.tools.shopline_zendesk.routes.shopline import webhook as sz_webhook
 from backend.tools.shopline_zendesk.routes.shopline import customers as sz_customers
-from backend.tools.shopline_zendesk.routes.shopline import zendesk_oauth as sz_zendesk_oauth
 from backend.tools.shopline_zendesk.routes.zendesk import customer as sz_customer
 
 logger = logging.getLogger(__name__)
@@ -56,7 +55,6 @@ app.include_router(sz_binding.router,  prefix="/api/shopline-zendesk/shopline")
 app.include_router(sz_session.router,  prefix="/api/shopline-zendesk/shopline")
 app.include_router(sz_webhook.router,    prefix="/api/shopline-zendesk/shopline")
 app.include_router(sz_customers.router,     prefix="/api/shopline-zendesk/shopline")
-app.include_router(sz_zendesk_oauth.router, prefix="/api/shopline-zendesk/shopline")
 app.include_router(sz_customer.router,      prefix="/api/shopline-zendesk/zendesk")
 
 @app.on_event("startup")

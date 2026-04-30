@@ -224,19 +224,20 @@ async def get_tickets(
         )
 
     subdomain = binding.get("zendesk_subdomain")
-    access_token = binding.get("zendesk_access_token")
+    admin_email = binding.get("zendesk_admin_email")
+    api_token = binding.get("zendesk_api_token")
 
-    # Prefer OAuth access_token; fall back to legacy credentials never
-    if not access_token:
+    if not admin_email or not api_token:
         return TicketListResponse(
             tickets=[],
             total=0,
-            error="Zendesk not connected. Please connect Zendesk via OAuth.",
+            error="Zendesk credentials not configured. Please add admin email and API token in Settings.",
         )
 
     # --- Zendesk ticket search (never raises) ---
     return await search_tickets(
         subdomain=subdomain,
-        access_token=access_token,
+        admin_email=admin_email,
+        api_token=api_token,
         customer_email=email,
     )

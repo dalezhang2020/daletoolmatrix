@@ -167,13 +167,7 @@ _COLUMNS_WITH_HANDLE = _COLUMNS + ("handle",)
 
 
 def _has_zendesk_credentials(row_dict: dict) -> bool:
-    """Return True if Zendesk OAuth access_token is set.
-
-    Falls back to legacy email+token check for backward compatibility.
-    """
-    if row_dict.get("zendesk_access_token"):
-        return True
-    # Legacy fallback
+    """Return True if Zendesk admin email AND API token are both set."""
     return bool(row_dict.get("zendesk_admin_email")) and bool(row_dict.get("zendesk_api_token"))
 
 
