@@ -181,11 +181,12 @@ async def callback(request: Request):
     )
     logger.info("Store upserted for handle=%s", handle)
 
-    # Redirect back to the Shopline admin app page.
-    # Shopline will reload the app iframe, hitting /entry again.
-    # This time /entry finds a valid token and loads the frontend inside the iframe.
-    # This avoids iframe nesting issues that occur when redirecting directly to Vercel.
+    # Redirect to frontend after OAuth (same pattern as imagelingo).
+    # The callback happens in the top-level window (not iframe), so a 302
+    # redirect to the Vercel frontend works correctly — Shopline will
+    # automatically reload the app iframe with the frontend content.
+    frontend_url = _env("SHOPLINE_ZD_FRONTEND_URL") or "http://localhost:3000"
     return RedirectResponse(
-        f"https://{handle}.myshopline.com/admin/apps/detail/{_env('SHOPLINE_ZD_APP_KEY')}",
+        f"{frontend_url}?handle={handle}",
         status_code=302,
     )
