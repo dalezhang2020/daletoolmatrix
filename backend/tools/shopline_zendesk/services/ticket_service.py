@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import logging
 from typing import Any
 
@@ -48,14 +47,9 @@ class TicketListResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _build_auth_header(admin_email: str, api_token: str) -> str:
-    """Construct the HTTP Basic Auth header for Zendesk API.
-
-    Format: ``Basic base64("{email}/token:{api_token}")``
-    """
-    credentials = f"{admin_email}/token:{api_token}"
-    encoded = base64.b64encode(credentials.encode("utf-8")).decode("ascii")
-    return f"Basic {encoded}"
+def _build_bearer_header(access_token: str) -> str:
+    """Construct the Bearer token Authorization header for Zendesk API."""
+    return f"Bearer {access_token}"
 
 
 def _build_search_query(customer_email: str) -> str:
@@ -87,8 +81,7 @@ def _map_ticket(raw: dict[str, Any], subdomain: str) -> TicketInfo:
 
 async def search_tickets(
     subdomain: str,
-    admin_email: str,
-    api_token: str,
+    access_token: str,
     customer_email: str,
 ) -> TicketListResponse:
     """Search Zendesk for tickets filed by *customer_email*.
@@ -100,8 +93,7 @@ async def search_tickets(
 
     Args:
         subdomain: Zendesk subdomain (e.g. ``"mycompany"``).
-        admin_email: Zendesk admin email for API authentication.
-        api_token: Zendesk API token.
+        access_token: Zendesk OAuth access token (Bearer auth).
         customer_email: The customer's email to search tickets for.
 
     Returns:
@@ -112,7 +104,7 @@ async def search_tickets(
     try:
         url = f"https://{subdomain}.zendesk.com/api/v2/search.json"
         headers = {
-            "Authorization": _build_auth_header(admin_email, api_token),
+            "Authorization": _build_bearer_header(access_token),
             "Content-Type": "application/json",
         }
         params = {"query": _build_search_query(customer_email)}

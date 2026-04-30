@@ -7,6 +7,7 @@ the one-to-one association between a Shopline store and a Zendesk subdomain.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from backend.tools.shopline_zendesk.db import binding_repo, store_repo
 from backend.tools.shopline_zendesk.services import api_key_service
@@ -39,8 +40,6 @@ class InvalidApiKeyError(Exception):
 def create_or_update_binding(
     handle: str,
     zendesk_subdomain: str,
-    zendesk_admin_email: str | None = None,
-    zendesk_api_token: str | None = None,
 ) -> dict:
     """Create or update a store-Zendesk binding.
 
@@ -49,6 +48,8 @@ def create_or_update_binding(
       2. Generate a fresh API key.
       3. Upsert the binding row (insert or update on store_id conflict).
       4. Return the binding dict with the plaintext API key included.
+
+    Zendesk credentials are now managed via OAuth (see update_zendesk_tokens).
 
     Raises:
         StoreNotFoundError: If no store exists for *handle*.
@@ -62,13 +63,45 @@ def create_or_update_binding(
         store_id=store["id"],
         zendesk_subdomain=zendesk_subdomain,
         api_key=api_key,
-        zendesk_admin_email=zendesk_admin_email,
-        zendesk_api_token=zendesk_api_token,
     )
 
     # Attach the handle for convenience (the repo row doesn't include it).
     binding["handle"] = handle
     return binding
+
+
+def update_zendesk_tokens(
+    handle: str,
+    access_token: str,
+    refresh_token: str | None = None,
+    expires_at: datetime | None = None,
+) -> dict:
+    """Store Zendesk OAuth tokens for a binding.
+
+    Called by the Zendesk OAuth callback after a successful token exchange.
+
+    Raises:
+        StoreNotFoundError: If no store exists for *handle*.
+        BindingNotFoundError: If no binding exists for the store.
+    """
+    store = store_repo.get_store_by_handle(handle)
+    if store is None:
+        raise StoreNotFoundError(f"No store found for handle: {handle}")
+
+    result = binding_repo.update_zendesk_tokens(
+        store_id=store["id"],
+        zendesk_access_token=access_token,
+        zendesk_refresh_token=refresh_token,
+        zendesk_token_expires_at=expires_at,
+    )
+    if result is None:
+        raise BindingNotFoundError(
+            f"No binding found for store: {handle}. "
+            "Create a binding first (save subdomain) before connecting Zendesk."
+        )
+
+    result["handle"] = handle
+    return result
 
 
 def get_binding_status(handle: str) -> dict:

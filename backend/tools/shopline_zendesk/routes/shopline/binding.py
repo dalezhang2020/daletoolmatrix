@@ -33,14 +33,6 @@ class BindingRequest(BaseModel):
         min_length=1,
         max_length=63,
     )
-    zendesk_admin_email: str | None = Field(
-        default=None,
-        max_length=200,
-    )
-    zendesk_api_token: str | None = Field(
-        default=None,
-        max_length=200,
-    )
 
 
 class BindingResponse(BaseModel):
@@ -91,6 +83,7 @@ async def put_binding(request: Request, body: BindingRequest) -> BindingResponse
 
     Accepts either HMAC-signed query params or just a ``handle`` param.
     The Zendesk subdomain comes from the JSON request body.
+    Zendesk credentials are now managed via OAuth (Connect Zendesk button).
     """
     params = dict(request.query_params)
     handle = params.get("handle", "")
@@ -108,8 +101,6 @@ async def put_binding(request: Request, body: BindingRequest) -> BindingResponse
         result = binding_service.create_or_update_binding(
             handle=handle,
             zendesk_subdomain=body.zendesk_subdomain,
-            zendesk_admin_email=body.zendesk_admin_email,
-            zendesk_api_token=body.zendesk_api_token,
         )
     except StoreNotFoundError:
         raise HTTPException(status_code=404, detail="Store not found")

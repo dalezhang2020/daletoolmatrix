@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 
 from backend.db.connection import get_connection
 
@@ -15,6 +16,9 @@ def upsert_binding(
     api_key: str,
     zendesk_admin_email: str | None = None,
     zendesk_api_token: str | None = None,
+    zendesk_access_token: str | None = None,
+    zendesk_refresh_token: str | None = None,
+    zendesk_token_expires_at: datetime | None = None,
 ) -> dict:
     """Insert a new binding or update on store_id conflict (one-to-one).
 
@@ -24,16 +28,22 @@ def upsert_binding(
     sql = """
         INSERT INTO shopline_zendesk.bindings
             (store_id, zendesk_subdomain, api_key,
-             zendesk_admin_email, zendesk_api_token)
-        VALUES (%s, %s, %s, %s, %s)
+             zendesk_admin_email, zendesk_api_token,
+             zendesk_access_token, zendesk_refresh_token, zendesk_token_expires_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (store_id) DO UPDATE
-          SET zendesk_subdomain   = EXCLUDED.zendesk_subdomain,
-              api_key             = EXCLUDED.api_key,
-              zendesk_admin_email = EXCLUDED.zendesk_admin_email,
-              zendesk_api_token   = EXCLUDED.zendesk_api_token,
-              updated_at          = NOW()
+          SET zendesk_subdomain        = EXCLUDED.zendesk_subdomain,
+              api_key                  = EXCLUDED.api_key,
+              zendesk_admin_email      = EXCLUDED.zendesk_admin_email,
+              zendesk_api_token        = EXCLUDED.zendesk_api_token,
+              zendesk_access_token     = EXCLUDED.zendesk_access_token,
+              zendesk_refresh_token    = EXCLUDED.zendesk_refresh_token,
+              zendesk_token_expires_at = EXCLUDED.zendesk_token_expires_at,
+              updated_at               = NOW()
         RETURNING id, store_id, zendesk_subdomain, api_key,
                   zendesk_admin_email, zendesk_api_token,
+                  zendesk_access_token, zendesk_refresh_token,
+                  zendesk_token_expires_at,
                   created_at, updated_at
     """
     with get_connection() as conn:
@@ -41,9 +51,47 @@ def upsert_binding(
             cur.execute(
                 sql,
                 (store_id, zendesk_subdomain, api_key,
-                 zendesk_admin_email, zendesk_api_token),
+                 zendesk_admin_email, zendesk_api_token,
+                 zendesk_access_token, zendesk_refresh_token,
+                 zendesk_token_expires_at),
             )
             row = cur.fetchone()
+    return _row_to_dict(row)
+
+
+def update_zendesk_tokens(
+    store_id: str,
+    zendesk_access_token: str,
+    zendesk_refresh_token: str | None = None,
+    zendesk_token_expires_at: datetime | None = None,
+) -> dict | None:
+    """Update only the Zendesk OAuth tokens for an existing binding.
+
+    Returns the updated row as a dict, or None if no binding exists.
+    """
+    sql = """
+        UPDATE shopline_zendesk.bindings
+          SET zendesk_access_token     = %s,
+              zendesk_refresh_token    = %s,
+              zendesk_token_expires_at = %s,
+              updated_at               = NOW()
+        WHERE store_id = %s
+        RETURNING id, store_id, zendesk_subdomain, api_key,
+                  zendesk_admin_email, zendesk_api_token,
+                  zendesk_access_token, zendesk_refresh_token,
+                  zendesk_token_expires_at,
+                  created_at, updated_at
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql,
+                (zendesk_access_token, zendesk_refresh_token,
+                 zendesk_token_expires_at, store_id),
+            )
+            row = cur.fetchone()
+    if row is None:
+        return None
     return _row_to_dict(row)
 
 
@@ -56,6 +104,8 @@ def get_binding_by_handle(handle: str) -> dict | None:
     sql = """
         SELECT b.id, b.store_id, b.zendesk_subdomain, b.api_key,
                b.zendesk_admin_email, b.zendesk_api_token,
+               b.zendesk_access_token, b.zendesk_refresh_token,
+               b.zendesk_token_expires_at,
                b.created_at, b.updated_at, s.handle
         FROM shopline_zendesk.bindings b
         JOIN shopline_zendesk.stores s ON s.id = b.store_id
@@ -79,6 +129,8 @@ def get_binding_by_subdomain(zendesk_subdomain: str) -> dict | None:
     sql = """
         SELECT b.id, b.store_id, b.zendesk_subdomain, b.api_key,
                b.zendesk_admin_email, b.zendesk_api_token,
+               b.zendesk_access_token, b.zendesk_refresh_token,
+               b.zendesk_token_expires_at,
                b.created_at, b.updated_at, s.handle
         FROM shopline_zendesk.bindings b
         JOIN shopline_zendesk.stores s ON s.id = b.store_id
@@ -104,6 +156,9 @@ _COLUMNS = (
     "api_key",
     "zendesk_admin_email",
     "zendesk_api_token",
+    "zendesk_access_token",
+    "zendesk_refresh_token",
+    "zendesk_token_expires_at",
     "created_at",
     "updated_at",
 )
@@ -111,24 +166,26 @@ _COLUMNS = (
 _COLUMNS_WITH_HANDLE = _COLUMNS + ("handle",)
 
 
-def _has_zendesk_credentials(email: str | None, token: str | None) -> bool:
-    """Return True if both zendesk_admin_email and zendesk_api_token are set."""
-    return bool(email) and bool(token)
+def _has_zendesk_credentials(row_dict: dict) -> bool:
+    """Return True if Zendesk OAuth access_token is set.
+
+    Falls back to legacy email+token check for backward compatibility.
+    """
+    if row_dict.get("zendesk_access_token"):
+        return True
+    # Legacy fallback
+    return bool(row_dict.get("zendesk_admin_email")) and bool(row_dict.get("zendesk_api_token"))
 
 
 def _row_to_dict(row: tuple) -> dict:
     """Convert a bindings row tuple to a dict keyed by column name."""
     d = dict(zip(_COLUMNS, row))
-    d["has_zendesk_credentials"] = _has_zendesk_credentials(
-        d.get("zendesk_admin_email"), d.get("zendesk_api_token"),
-    )
+    d["has_zendesk_credentials"] = _has_zendesk_credentials(d)
     return d
 
 
 def _row_to_dict_with_handle(row: tuple) -> dict:
     """Convert a bindings+handle row tuple to a dict keyed by column name."""
     d = dict(zip(_COLUMNS_WITH_HANDLE, row))
-    d["has_zendesk_credentials"] = _has_zendesk_credentials(
-        d.get("zendesk_admin_email"), d.get("zendesk_api_token"),
-    )
+    d["has_zendesk_credentials"] = _has_zendesk_credentials(d)
     return d
