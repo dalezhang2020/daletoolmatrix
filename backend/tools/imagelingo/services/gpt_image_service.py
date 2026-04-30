@@ -352,9 +352,15 @@ async def translate_image(
     # Save to temp file for immediate serving
     image_id = str(uuid.uuid4())[:12]
     os.makedirs("/tmp/imagelingo_results", exist_ok=True)
-    path = f"/tmp/imagelingo_results/{image_id}.png"
+    path = f"/tmp/imagelingo_results/{image_id}.jpg"
     with open(path, "wb") as f:
         f.write(result_bytes)
-    temp_url = f"/api/imagelingo/translate/results/{image_id}.png"
+
+    # Build full URL using the backend's public domain
+    backend_host = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
+    if backend_host:
+        temp_url = f"https://{backend_host}/api/imagelingo/translate/results/{image_id}.jpg"
+    else:
+        temp_url = f"/api/imagelingo/translate/results/{image_id}.jpg"
 
     return result_bytes, temp_url

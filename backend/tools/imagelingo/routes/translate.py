@@ -465,12 +465,12 @@ from fastapi.responses import FileResponse
 
 @router.get("/results/{filename}")
 async def serve_result_image(filename: str):
-    """Serve a translated image from the local cache (used when CDN upload fails)."""
+    """Serve a translated image from the local temp cache."""
     import re
-    # Sanitize filename to prevent path traversal
-    if not re.match(r'^[a-f0-9]{12}\.png$', filename):
+    if not re.match(r'^[a-f0-9]{12}\.(png|jpg)$', filename):
         raise HTTPException(400, "Invalid filename")
     file_path = f"/tmp/imagelingo_results/{filename}"
     if not os.path.exists(file_path):
         raise HTTPException(404, "Image not found")
-    return FileResponse(file_path, media_type="image/png")
+    media = "image/jpeg" if filename.endswith(".jpg") else "image/png"
+    return FileResponse(file_path, media_type=media)
