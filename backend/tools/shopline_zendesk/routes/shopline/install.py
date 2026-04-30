@@ -165,6 +165,12 @@ async def callback(request: Request):
             status_code=502,
             detail="Upstream timeout during token exchange",
         ) from exc
+    except RuntimeError as exc:
+        logger.error("Token exchange error for handle=%s: %s", handle, exc)
+        raise HTTPException(
+            status_code=502,
+            detail=str(exc),
+        ) from exc
 
     # Persist token to database
     store_repo.upsert_store(
