@@ -467,7 +467,7 @@ from fastapi.responses import FileResponse
 async def serve_result_image(filename: str):
     """Serve a translated image from the local temp cache."""
     import re
-    if not re.match(r'^[a-f0-9]{12}\.(png|jpg)$', filename):
+    if not re.match(r'^[a-f0-9\-]{8,16}\.(png|jpg)$', filename):
         raise HTTPException(400, "Invalid filename")
     file_path = f"/tmp/imagelingo_results/{filename}"
     if not os.path.exists(file_path):
