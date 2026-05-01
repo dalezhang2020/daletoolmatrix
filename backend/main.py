@@ -35,6 +35,10 @@ from backend.tools.omnigatech.middleware.auth import (
 from backend.tools.omnigatech.middleware.tenant import (
     OmnigaTechTenantMiddleware,
 )
+from backend.tools.shopline_zendesk.services.token_refresh_job import (
+    start_refresh_job,
+    stop_refresh_job,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +113,20 @@ async def _startup_env_check():
     except Exception:
         logger.exception("Failed to initialize OmnigaTech tables")
 
+    # Start Shopline token refresh background job (every 60 min)
+    try:
+        start_refresh_job(interval_minutes=60)
+        logger.info("Shopline token refresh job started")
+    except Exception:
+        logger.exception("Failed to start token refresh job")
+
 
 @app.get("/health")
 async def health():
     return {"status": "ok", "service": "daletoolmatrix"}
+
+
+@app.on_event("shutdown")
+async def _shutdown():
+    stop_refresh_job()
+    logger.info("Token refresh job stopped")
