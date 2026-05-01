@@ -120,6 +120,21 @@ def get_binding_by_handle(handle: str) -> dict | None:
     return _row_to_dict_with_handle(row)
 
 
+def delete_binding_by_subdomain(zendesk_subdomain: str) -> bool:
+    """Delete a binding by Zendesk subdomain. Returns True if a row was deleted.
+
+    The associated store record is intentionally kept.
+    """
+    sql = """
+        DELETE FROM shopline_zendesk.bindings
+        WHERE zendesk_subdomain = %s
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (zendesk_subdomain,))
+            return cur.rowcount > 0
+
+
 def get_binding_by_subdomain(zendesk_subdomain: str) -> dict | None:
     """Look up a binding by Zendesk subdomain.
 

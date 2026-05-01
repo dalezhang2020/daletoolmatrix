@@ -36,6 +36,7 @@ from backend.tools.shopline_zendesk.routes.shopline import install as shopline_i
 from backend.tools.shopline_zendesk.routes.shopline import session as shopline_session
 from backend.tools.shopline_zendesk.routes.shopline import webhook as shopline_webhook
 from backend.tools.shopline_zendesk.routes.zendesk import customer as zaf_legacy_customer
+from backend.tools.shopline_zendesk.routes.oauth import router as oauth_router
 
 
 SHOPLINE_FRONTEND_PREFIX = "/api/shopline-zendesk/shopline"
@@ -115,4 +116,16 @@ def include_zaf_frontend_routes(app: FastAPI) -> None:
         zaf_stripe_v2.router,
         prefix="/api/stripe",
         tags=["zendesk-zaf-v2"],
+    )
+
+
+def include_oauth_routes(app: FastAPI) -> None:
+    """Register OAuth routes for Shopline-Zendesk integration.
+
+    Mounts the OAuth router at its own prefix (/oauth/shopline).
+    The router already has the prefix set, so no additional prefix is needed.
+    """
+    app.include_router(
+        oauth_router,
+        tags=["shopline-oauth"],
     )

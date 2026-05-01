@@ -9,11 +9,14 @@ _REQUIRED: Dict[str, str] = {
     "SHOPLINE_ZD_APP_SECRET": "Shopline-Zendesk app secret",
     "DATABASE_URL": "Neon/PostgreSQL connection string",
     "SHOPLINE_ZD_FRONTEND_URL": "Vercel frontend URL for post-OAuth redirect",
+    "SHOPLINE_ZD_OAUTH_REDIRECT_URI": "OAuth callback URL (e.g. https://positive-warmth-production.up.railway.app/oauth/shopline/callback)",
+    "SHOPLINE_ZD_BACKEND_URL": "Backend URL for postMessage origin validation",
 }
 
 # Optional env vars with defaults
 _OPTIONAL_DEFAULTS: Dict[str, str] = {
     "SHOPLINE_ZD_SKIP_HMAC": "0",  # Set to "1" in local dev to skip HMAC verification
+    "SHOPLINE_ZD_OAUTH_SCOPES": "read_customers,read_orders",  # Default OAuth scopes
 }
 
 
@@ -34,8 +37,14 @@ def validate_env(keys: Optional[List[str]] = None) -> None:
 
 
 def validate_shopline_zd() -> None:
-    """Validate Shopline-Zendesk specific env vars."""
-    validate_env(["SHOPLINE_ZD_APP_KEY", "SHOPLINE_ZD_APP_SECRET", "SHOPLINE_ZD_FRONTEND_URL"])
+    """Validate Shopline-Zendesk specific env vars (includes OAuth vars)."""
+    validate_env([
+        "SHOPLINE_ZD_APP_KEY",
+        "SHOPLINE_ZD_APP_SECRET",
+        "SHOPLINE_ZD_FRONTEND_URL",
+        "SHOPLINE_ZD_OAUTH_REDIRECT_URI",
+        "SHOPLINE_ZD_BACKEND_URL",
+    ])
 
 
 def validate_database() -> None:
@@ -46,3 +55,8 @@ def validate_database() -> None:
 def get_skip_hmac() -> bool:
     """Return whether HMAC verification should be skipped (local dev only)."""
     return os.environ.get("SHOPLINE_ZD_SKIP_HMAC", _OPTIONAL_DEFAULTS["SHOPLINE_ZD_SKIP_HMAC"]) == "1"
+
+
+def get_oauth_scopes() -> str:
+    """Return the configured OAuth scopes, falling back to the default."""
+    return os.environ.get("SHOPLINE_ZD_OAUTH_SCOPES", _OPTIONAL_DEFAULTS["SHOPLINE_ZD_OAUTH_SCOPES"])
