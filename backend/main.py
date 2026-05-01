@@ -12,6 +12,7 @@ from backend.tools.imagelingo.routes import auth, translate, webhook, products
 from backend.tools.fitness import routes as fitness_routes
 from backend.shared.s3_router import router as s3_router
 from backend.tools.shopline_zendesk.routes import (
+    include_oauth_routes,
     include_shopline_frontend_routes,
     include_zaf_frontend_routes,
 )
@@ -88,6 +89,7 @@ app.include_router(s3_router, prefix="/api/shared/s3")
 # 2) Zendesk ZAF frontend (legacy + v2)
 include_shopline_frontend_routes(app)
 include_zaf_frontend_routes(app)
+include_oauth_routes(app)
 
 # -- Tool: OmnigaTech
 include_omnigatech_routes(app)
