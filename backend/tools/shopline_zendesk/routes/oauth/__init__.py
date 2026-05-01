@@ -34,7 +34,7 @@ from backend.tools.shopline_zendesk.services.validators import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/oauth/shopline", tags=["shopline-oauth"])
+router = APIRouter(prefix="/oauth/shopline", tags=["shopline-oauth"], redirect_slashes=True)
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +299,7 @@ async def oauth_start_submit(
 
 
 @router.get("/callback")
+@router.get("/callback/")
 async def oauth_callback(request: Request):
     """Handle the Shopline OAuth callback.
 
