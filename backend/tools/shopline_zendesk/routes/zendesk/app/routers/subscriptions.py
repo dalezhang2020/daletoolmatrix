@@ -14,6 +14,53 @@ from backend.tools.shopline_zendesk.db import binding_repo
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+
+def _resolve_tenant_id(request: Request) -> str:
+    """Resolve the active tenant/store id for subscription operations."""
+    tenant_store_id = getattr(request.state, "tenant_store_id", None)
+    if tenant_store_id:
+        return str(tenant_store_id)
+
+    zendesk_subdomain = request.headers.get("X-Zendesk-Subdomain")
+    if not zendesk_subdomain:
+        raise HTTPException(status_code=400, detail="Zendesk subdomain not found")
+
+    requested_handle = (
+        request.headers.get("X-Shopline-Handle")
+        or request.query_params.get("shopline_handle")
+    )
+
+    if requested_handle:
+        binding = binding_repo.get_binding_by_subdomain_and_handle(
+            zendesk_subdomain,
+            requested_handle,
+        )
+        if not binding:
+            raise HTTPException(
+                status_code=404,
+                detail="Store is not linked to this Zendesk subdomain",
+            )
+        return str(binding["store_id"])
+
+    bindings = binding_repo.list_bindings_by_subdomain(zendesk_subdomain)
+    if not bindings:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    if len(bindings) == 1:
+        return str(bindings[0]["store_id"])
+
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "STORE_SELECTION_REQUIRED",
+            "error": (
+                "Multiple Shopline stores are linked to this Zendesk account. "
+                "Provide X-Shopline-Handle or shopline_handle."
+            ),
+            "available_stores": [binding["handle"] for binding in bindings],
+        },
+    )
+
 # 订阅计划配置
 SUBSCRIPTION_PLANS = {
     SubscriptionTier.BASIC: {
@@ -73,23 +120,7 @@ async def get_current_subscription(
 ):
     """获取当前订阅信息"""
     try:
-        # 从请求头获取租户信息
-        zendesk_subdomain = request.headers.get("X-Zendesk-Subdomain")
-        if not zendesk_subdomain:
-            raise HTTPException(
-                status_code=400,
-                detail="Zendesk subdomain not found"
-            )
-        
-        # 查询租户 — use binding to resolve tenant identity
-        binding = binding_repo.get_binding_by_subdomain(zendesk_subdomain)
-        if not binding:
-            raise HTTPException(
-                status_code=404,
-                detail="Tenant not found"
-            )
-        
-        tenant_id = str(binding["store_id"])
+        tenant_id = _resolve_tenant_id(request)
         
         # 查询当前活跃的订阅
         subscription_result = await db.execute(
@@ -123,6 +154,8 @@ async def get_current_subscription(
             success=True,
             data=subscription_data
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error getting current subscription: {e}")
         return ApiResponse(
@@ -139,23 +172,7 @@ async def create_subscription(
 ):
     """创建新订阅"""
     try:
-        # 从请求头获取租户信息
-        zendesk_subdomain = request.headers.get("X-Zendesk-Subdomain")
-        if not zendesk_subdomain:
-            raise HTTPException(
-                status_code=400,
-                detail="Zendesk subdomain not found"
-            )
-        
-        # 查询租户
-        binding = binding_repo.get_binding_by_subdomain(zendesk_subdomain)
-        if not binding:
-            raise HTTPException(
-                status_code=404,
-                detail="Tenant not found"
-            )
-        
-        tenant_id = str(binding["store_id"])
+        tenant_id = _resolve_tenant_id(request)
         
         # 计算价格
         plan_config = SUBSCRIPTION_PLANS.get(plan_type)
@@ -195,6 +212,8 @@ async def create_subscription(
                 "expires_at": subscription.expires_at
             }
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error creating subscription: {e}")
         return ApiResponse(
@@ -231,6 +250,8 @@ async def cancel_subscription(
             success=True,
             message="Subscription cancelled successfully"
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error cancelling subscription: {e}")
         return ApiResponse(

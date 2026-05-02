@@ -21,7 +21,7 @@ from fastapi import APIRouter, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from backend.tools.shopline_zendesk.db import binding_repo, oauth_state_repo, store_repo
-from backend.tools.shopline_zendesk.services import shopline_auth
+from backend.tools.shopline_zendesk.services import api_key_service, shopline_auth
 from backend.tools.shopline_zendesk.services.oauth_state_service import (
     generate_state,
     verify_state,
@@ -469,11 +469,17 @@ async def oauth_callback(request: Request):
         )
         logger.info("Store upserted: handle=%s", handle)
 
-        # Generate a simple API key for the binding (reuse handle as identifier).
+        existing_binding = binding_repo.get_binding_by_handle(handle)
+        api_key = (
+            existing_binding["api_key"]
+            if existing_binding and existing_binding.get("api_key")
+            else api_key_service.generate_api_key()
+        )
+
         binding_repo.upsert_binding(
             store_id=str(store["id"]),
             zendesk_subdomain=zendesk_subdomain,
-            api_key=handle,  # Use handle as the API key for OAuth-created bindings.
+            api_key=api_key,
         )
         logger.info(
             "Binding upserted: handle=%s zendesk_subdomain=%s",
@@ -517,6 +523,7 @@ async def oauth_disconnect(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON body")
 
     zendesk_subdomain = body.get("zendesk_subdomain", "")
+    handle = body.get("handle", "")
 
     try:
         validated_subdomain = validate_zendesk_subdomain(zendesk_subdomain)
@@ -526,19 +533,58 @@ async def oauth_disconnect(request: Request):
             detail="Invalid or missing zendesk_subdomain",
         )
 
-    deleted = binding_repo.delete_binding_by_subdomain(validated_subdomain)
+    bindings = binding_repo.list_bindings_by_subdomain(validated_subdomain)
+    if not bindings:
+        return JSONResponse(
+            content={
+                "success": True,
+                "zendesk_subdomain": validated_subdomain,
+                "handle": handle or None,
+            }
+        )
+
+    if handle:
+        deleted = binding_repo.delete_binding_by_subdomain_and_handle(
+            validated_subdomain,
+            handle,
+        )
+    elif len(bindings) == 1:
+        deleted = binding_repo.delete_binding_by_subdomain_and_handle(
+            validated_subdomain,
+            bindings[0]["handle"],
+        )
+        handle = bindings[0]["handle"]
+    else:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "success": False,
+                "error": (
+                    "Multiple Shopline stores are linked to this Zendesk account. "
+                    "Provide a store handle to disconnect one binding."
+                ),
+                "code": "STORE_SELECTION_REQUIRED",
+                "available_stores": [binding["handle"] for binding in bindings],
+            },
+        )
 
     if deleted:
-        logger.info("Binding disconnected: zendesk_subdomain=%s", validated_subdomain)
+        logger.info(
+            "Binding disconnected: zendesk_subdomain=%s handle=%s",
+            validated_subdomain,
+            handle,
+        )
     else:
         logger.info(
-            "Disconnect: no binding found for zendesk_subdomain=%s",
+            "Disconnect: no binding found for zendesk_subdomain=%s handle=%s",
             validated_subdomain,
+            handle,
         )
 
     return JSONResponse(
         content={
             "success": True,
             "zendesk_subdomain": validated_subdomain,
+            "handle": handle or None,
         }
     )

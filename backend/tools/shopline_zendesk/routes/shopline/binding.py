@@ -77,6 +77,8 @@ class BindingResponse(BaseModel):
     zendesk_subdomain: str | None
     api_key: str | None
     has_zendesk_credentials: bool = False
+    managed_in_zaf: bool = True
+    token_invalid: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -121,29 +123,13 @@ async def put_binding(request: Request, body: BindingRequest) -> BindingResponse
     Accepts either HMAC-signed query params or just a ``handle`` param.
     The Zendesk subdomain, admin email, and API token come from the JSON body.
     """
-    params = dict(request.query_params)
-    handle = params.get("handle", "")
-
-    if not handle:
-        raise HTTPException(status_code=400, detail="Missing handle parameter")
-
-    # If HMAC params are present, verify them; otherwise trust the iframe context
-    if params.get("sign"):
-        if not shopline_auth.verify_hmac(params, _env("SHOPLINE_ZD_APP_SECRET")):
-            logger.warning("Binding PUT HMAC verification failed for handle=%s", handle)
-            raise HTTPException(status_code=401, detail="Invalid signature")
-
-    try:
-        result = binding_service.create_or_update_binding(
-            handle=handle,
-            zendesk_subdomain=body.zendesk_subdomain,
-            zendesk_admin_email=body.zendesk_admin_email,
-            zendesk_api_token=body.zendesk_api_token,
-        )
-    except StoreNotFoundError:
-        raise HTTPException(status_code=404, detail="Store not found")
-
-    return BindingResponse(**result)
+    raise HTTPException(
+        status_code=409,
+        detail=(
+            "Zendesk bindings are now managed from the Zendesk app. "
+            "Open the ZAF app in Zendesk to connect or update this store."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

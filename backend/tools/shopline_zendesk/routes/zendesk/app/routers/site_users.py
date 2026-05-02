@@ -39,6 +39,7 @@ class CompanyInfoUpdate(BaseModel):
 
 class TenantBinding(BaseModel):
     zendesk_subdomain: str
+    shopline_handle: Optional[str] = None
     is_owner: bool = False
 
 class LoginRequest(BaseModel):
@@ -233,10 +234,33 @@ async def bind_tenant_to_user(
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
         
-        # 查找或创建租户 — look up binding by subdomain
+        # 查找或创建租户 — use explicit store handle when multiple bindings exist
         from backend.tools.shopline_zendesk.db import binding_repo
-        store_binding = binding_repo.get_binding_by_subdomain(binding_data.zendesk_subdomain)
-        
+
+        if binding_data.shopline_handle:
+            store_binding = binding_repo.get_binding_by_subdomain_and_handle(
+                binding_data.zendesk_subdomain,
+                binding_data.shopline_handle,
+            )
+        else:
+            bindings = binding_repo.list_bindings_by_subdomain(binding_data.zendesk_subdomain)
+            if not bindings:
+                store_binding = None
+            elif len(bindings) == 1:
+                store_binding = bindings[0]
+            else:
+                return ApiResponse(
+                    success=False,
+                    error=(
+                        "Multiple Shopline stores are linked to this Zendesk "
+                        "account. Provide shopline_handle to bind the user."
+                    ),
+                    data={
+                        "code": "STORE_SELECTION_REQUIRED",
+                        "available_stores": [binding["handle"] for binding in bindings],
+                    },
+                )
+
         if not store_binding:
             # No binding exists for this subdomain yet — cannot bind
             return ApiResponse(

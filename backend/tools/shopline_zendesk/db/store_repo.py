@@ -27,20 +27,24 @@ def upsert_store(
           SET access_token = EXCLUDED.access_token,
               expires_at   = EXCLUDED.expires_at,
               scopes       = EXCLUDED.scopes,
+              refresh_fail_count = 0,
+              token_invalid = FALSE,
               updated_at   = NOW()
-        RETURNING id, handle, access_token, expires_at, scopes, installed_at, updated_at
+        RETURNING id, handle, access_token, expires_at, scopes,
+                  installed_at, updated_at, refresh_fail_count, token_invalid
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, (handle, access_token, expires_at, scopes))
             row = cur.fetchone()
-    return _row_to_dict(row)
+    return _row_to_dict_extended(row)
 
 
 def get_store_by_handle(handle: str) -> dict | None:
     """Look up a store by its Shopline handle. Returns None if not found."""
     sql = """
-        SELECT id, handle, access_token, expires_at, scopes, installed_at, updated_at
+        SELECT id, handle, access_token, expires_at, scopes,
+               installed_at, updated_at, refresh_fail_count, token_invalid
         FROM shopline_zendesk.stores
         WHERE handle = %s
     """
@@ -50,7 +54,7 @@ def get_store_by_handle(handle: str) -> dict | None:
             row = cur.fetchone()
     if row is None:
         return None
-    return _row_to_dict(row)
+    return _row_to_dict_extended(row)
 
 
 def get_store_by_id(store_id: str) -> dict | None:

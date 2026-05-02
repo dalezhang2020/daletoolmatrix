@@ -120,6 +120,31 @@ def get_binding_by_handle(handle: str) -> dict | None:
     return _row_to_dict_with_handle(row)
 
 
+def get_binding_by_subdomain_and_handle(
+    zendesk_subdomain: str,
+    handle: str,
+) -> dict | None:
+    """Look up a binding by Zendesk subdomain and Shopline handle."""
+    sql = """
+        SELECT b.id, b.store_id, b.zendesk_subdomain, b.api_key,
+               b.zendesk_admin_email, b.zendesk_api_token,
+               b.zendesk_access_token, b.zendesk_refresh_token,
+               b.zendesk_token_expires_at,
+               b.created_at, b.updated_at, s.handle
+        FROM shopline_zendesk.bindings b
+        JOIN shopline_zendesk.stores s ON s.id = b.store_id
+        WHERE b.zendesk_subdomain = %s
+          AND s.handle = %s
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (zendesk_subdomain, handle))
+            row = cur.fetchone()
+    if row is None:
+        return None
+    return _row_to_dict_with_handle(row)
+
+
 def delete_binding_by_subdomain(zendesk_subdomain: str) -> bool:
     """Delete a binding by Zendesk subdomain. Returns True if a row was deleted.
 
@@ -135,11 +160,30 @@ def delete_binding_by_subdomain(zendesk_subdomain: str) -> bool:
             return cur.rowcount > 0
 
 
+def delete_binding_by_subdomain_and_handle(
+    zendesk_subdomain: str,
+    handle: str,
+) -> bool:
+    """Delete a binding by Zendesk subdomain and store handle."""
+    sql = """
+        DELETE FROM shopline_zendesk.bindings b
+        USING shopline_zendesk.stores s
+        WHERE b.store_id = s.id
+          AND b.zendesk_subdomain = %s
+          AND s.handle = %s
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (zendesk_subdomain, handle))
+            return cur.rowcount > 0
+
+
 def get_binding_by_subdomain(zendesk_subdomain: str) -> dict | None:
     """Look up a binding by Zendesk subdomain.
 
     JOINs with shopline_zendesk.stores to include the store handle.
-    Returns None if no binding exists for the subdomain.
+    This is retained for legacy single-store callers and returns the most
+    recently updated matching binding when multiple stores are linked.
     """
     sql = """
         SELECT b.id, b.store_id, b.zendesk_subdomain, b.api_key,
@@ -150,6 +194,8 @@ def get_binding_by_subdomain(zendesk_subdomain: str) -> dict | None:
         FROM shopline_zendesk.bindings b
         JOIN shopline_zendesk.stores s ON s.id = b.store_id
         WHERE b.zendesk_subdomain = %s
+        ORDER BY b.updated_at DESC, s.handle ASC
+        LIMIT 1
     """
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -158,6 +204,26 @@ def get_binding_by_subdomain(zendesk_subdomain: str) -> dict | None:
     if row is None:
         return None
     return _row_to_dict_with_handle(row)
+
+
+def list_bindings_by_subdomain(zendesk_subdomain: str) -> list[dict]:
+    """List every binding linked to the Zendesk subdomain."""
+    sql = """
+        SELECT b.id, b.store_id, b.zendesk_subdomain, b.api_key,
+               b.zendesk_admin_email, b.zendesk_api_token,
+               b.zendesk_access_token, b.zendesk_refresh_token,
+               b.zendesk_token_expires_at,
+               b.created_at, b.updated_at, s.handle
+        FROM shopline_zendesk.bindings b
+        JOIN shopline_zendesk.stores s ON s.id = b.store_id
+        WHERE b.zendesk_subdomain = %s
+        ORDER BY b.updated_at DESC, s.handle ASC
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, (zendesk_subdomain,))
+            rows = cur.fetchall()
+    return [_row_to_dict_with_handle(row) for row in rows]
 
 
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 """Store-Zendesk binding CRUD logic.
 
 Orchestrates binding_repo, store_repo, and api_key_service to manage
-the one-to-one association between a Shopline store and a Zendesk subdomain.
+Shopline store bindings under a Zendesk subdomain.
 """
 
 from __future__ import annotations
@@ -80,6 +80,9 @@ def get_binding_status(handle: str) -> dict:
     Raises:
         BindingNotFoundError: If no binding exists for *handle*.
     """
+    store = store_repo.get_store_by_handle(handle)
+    token_invalid = bool(store.get("token_invalid", False)) if store else False
+
     binding = binding_repo.get_binding_by_handle(handle)
     if binding is None:
         # No binding yet is a normal state — return a "not configured" stub.
@@ -88,16 +91,21 @@ def get_binding_status(handle: str) -> dict:
             "zendesk_subdomain": None,
             "api_key": None,
             "has_zendesk_credentials": False,
+            "managed_in_zaf": True,
+            "token_invalid": token_invalid,
         }
 
     # Strip the API key from the response.
     binding["api_key"] = None
+    binding["managed_in_zaf"] = True
+    binding["token_invalid"] = token_invalid
     return binding
 
 
 def resolve_store_from_subdomain(
     zendesk_subdomain: str,
     api_key: str,
+    handle: str | None = None,
 ) -> dict:
     """Authenticate a Zendesk request and resolve the backing Shopline store.
 
@@ -115,13 +123,31 @@ def resolve_store_from_subdomain(
         StoreNotFoundError: If the store referenced by the binding no longer
             exists (should not happen under normal operation).
     """
-    binding = binding_repo.get_binding_by_subdomain(zendesk_subdomain)
-    if binding is None:
+    if handle:
+        candidate_bindings = []
+        scoped_binding = binding_repo.get_binding_by_subdomain_and_handle(
+            zendesk_subdomain=zendesk_subdomain,
+            handle=handle,
+        )
+        if scoped_binding is not None:
+            candidate_bindings.append(scoped_binding)
+    else:
+        candidate_bindings = binding_repo.list_bindings_by_subdomain(zendesk_subdomain)
+
+    if not candidate_bindings:
         raise BindingNotFoundError(
             f"No binding found for subdomain: {zendesk_subdomain}"
         )
 
-    if not api_key_service.verify_api_key(api_key, binding["api_key"]):
+    binding = next(
+        (
+            candidate
+            for candidate in candidate_bindings
+            if api_key_service.verify_api_key(api_key, candidate["api_key"])
+        ),
+        None,
+    )
+    if binding is None:
         raise InvalidApiKeyError("API key verification failed")
 
     store = store_repo.get_store_by_id(binding["store_id"])
