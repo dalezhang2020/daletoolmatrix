@@ -117,6 +117,7 @@ def _render_error_html(
 def _render_success_html(zendesk_subdomain: str) -> HTMLResponse:
     """Render an HTML page that notifies the opener and closes the popup."""
     safe_subdomain = escape(zendesk_subdomain)
+    backend_url = _env("SHOPLINE_ZD_BACKEND_URL") or "*"
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Authorization Complete</title>
@@ -137,17 +138,49 @@ def _render_success_html(zendesk_subdomain: str) -> HTMLResponse:
     <p>Your Shopline store has been connected. This window will close automatically.</p>
   </div>
   <script>
-    try {{
-      if (window.opener) {{
-        window.opener.postMessage({{
-          type: 'shopline-oauth-success',
-          zendesk_subdomain: '{safe_subdomain}'
-        }}, '*');
+    (function() {{
+      var msg = {{
+        type: 'shopline-oauth-success',
+        zendesk_subdomain: '{safe_subdomain}'
+      }};
+      var sent = false;
+
+      // 1. Try window.opener (normal popup flow)
+      try {{
+        if (window.opener && !window.opener.closed) {{
+          window.opener.postMessage(msg, '*');
+          sent = true;
+          console.log('[OAuth] postMessage sent via window.opener');
+        }}
+      }} catch (e) {{
+        console.warn('[OAuth] window.opener postMessage failed:', e);
       }}
-    }} catch (e) {{
-      console.error('Failed to send postMessage:', e);
-    }}
-    setTimeout(function() {{ window.close(); }}, 1500);
+
+      // 2. Try BroadcastChannel (works across same-origin tabs/iframes)
+      try {{
+        var bc = new BroadcastChannel('shopline-oauth');
+        bc.postMessage(msg);
+        sent = true;
+        console.log('[OAuth] postMessage sent via BroadcastChannel');
+        setTimeout(function() {{ bc.close(); }}, 2000);
+      }} catch (e) {{
+        console.warn('[OAuth] BroadcastChannel failed:', e);
+      }}
+
+      // 3. Try localStorage event (cross-tab fallback)
+      try {{
+        localStorage.setItem('shopline-oauth-result', JSON.stringify(msg));
+        sent = true;
+        console.log('[OAuth] result written to localStorage');
+        // Clean up after a short delay
+        setTimeout(function() {{ localStorage.removeItem('shopline-oauth-result'); }}, 3000);
+      }} catch (e) {{
+        console.warn('[OAuth] localStorage failed:', e);
+      }}
+
+      // Auto-close after a short delay
+      setTimeout(function() {{ window.close(); }}, 2000);
+    }})();
   </script>
 </body>
 </html>"""
