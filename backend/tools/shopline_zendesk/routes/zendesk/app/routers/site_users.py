@@ -325,7 +325,7 @@ async def get_user_tenants(
                 SELECT s.id, b.zendesk_subdomain, ut.is_owner
                 FROM shopline_zendesk.stores s
                 JOIN shopline_zendesk.bindings b ON b.store_id = s.id
-                JOIN user_tenants ut ON ut.tenant_id = CAST(s.id AS text)
+                JOIN omnigatech.user_tenants ut ON ut.tenant_id = CAST(s.id AS text)
                 WHERE ut.user_id = :user_id
             """),
             {"user_id": user_id}
