@@ -71,6 +71,48 @@ def create_or_update_binding(
     return binding
 
 
+def update_zendesk_credentials(
+    handle: str,
+    zendesk_admin_email: str | None = None,
+    zendesk_api_token: str | None = None,
+) -> dict:
+    """Update only the Zendesk admin credentials on an existing binding.
+
+    This does NOT create a new binding or change the zendesk_subdomain.
+    It only patches zendesk_admin_email and zendesk_api_token on the
+    binding that was already created by the ZAF OAuth flow.
+
+    Raises:
+        StoreNotFoundError: If no store exists for *handle*.
+        BindingNotFoundError: If no binding exists for *handle*.
+    """
+    store = store_repo.get_store_by_handle(handle)
+    if store is None:
+        raise StoreNotFoundError(f"No store found for handle: {handle}")
+
+    binding = binding_repo.get_binding_by_handle(handle)
+    if binding is None:
+        raise BindingNotFoundError(f"No binding found for handle: {handle}")
+
+    # Update only the credential fields, keep everything else intact
+    updated = binding_repo.upsert_binding(
+        store_id=str(store["id"]),
+        zendesk_subdomain=binding["zendesk_subdomain"],
+        api_key=binding["api_key"],
+        zendesk_admin_email=zendesk_admin_email,
+        zendesk_api_token=zendesk_api_token,
+        zendesk_access_token=binding.get("zendesk_access_token"),
+        zendesk_refresh_token=binding.get("zendesk_refresh_token"),
+        zendesk_token_expires_at=binding.get("zendesk_token_expires_at"),
+    )
+    updated["handle"] = handle
+    updated["managed_in_zaf"] = True
+    updated["token_invalid"] = bool(store.get("token_invalid", False))
+    # Strip sensitive fields
+    updated["api_key"] = None
+    return updated
+
+
 def get_binding_status(handle: str) -> dict:
     """Return the current binding for a store, without exposing the API key.
 

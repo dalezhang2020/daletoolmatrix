@@ -31,8 +31,8 @@ def _env(key: str) -> str:
 
 
 class BindingRequest(BaseModel):
-    zendesk_subdomain: str = Field(
-        ...,
+    zendesk_subdomain: str | None = Field(
+        default=None,
         pattern=r"^[a-z0-9-]+$",
         min_length=1,
         max_length=63,
@@ -118,18 +118,45 @@ async def get_binding(request: Request) -> BindingResponse:
 
 @router.put("/binding")
 async def put_binding(request: Request, body: BindingRequest) -> BindingResponse:
-    """Create or update the store-Zendesk binding.
+    """Update Zendesk credentials on an existing binding.
 
-    Accepts either HMAC-signed query params or just a ``handle`` param.
-    The Zendesk subdomain, admin email, and API token come from the JSON body.
+    Only updates zendesk_admin_email and zendesk_api_token on the binding
+    that was already created by the ZAF OAuth flow. Does NOT create new
+    bindings or change the zendesk_subdomain — those are managed by ZAF.
     """
-    raise HTTPException(
-        status_code=409,
-        detail=(
-            "Zendesk bindings are now managed from the Zendesk app. "
-            "Open the ZAF app in Zendesk to connect or update this store."
-        ),
-    )
+    params = dict(request.query_params)
+    handle = params.get("handle", "")
+
+    if not handle:
+        raise HTTPException(status_code=400, detail="Missing handle parameter")
+
+    # Verify HMAC if present
+    if params.get("sign"):
+        if not shopline_auth.verify_hmac(params, _env("SHOPLINE_ZD_APP_SECRET")):
+            raise HTTPException(status_code=401, detail="Invalid signature")
+
+    # Look up existing binding — must already exist (created by ZAF OAuth)
+    existing = binding_service.get_binding_status(handle)
+    if not existing.get("zendesk_subdomain"):
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No Zendesk binding found for this store. "
+                "Connect the store from the Zendesk app first."
+            ),
+        )
+
+    # Only update credentials on the existing binding
+    try:
+        result = binding_service.update_zendesk_credentials(
+            handle=handle,
+            zendesk_admin_email=body.zendesk_admin_email,
+            zendesk_api_token=body.zendesk_api_token,
+        )
+    except StoreNotFoundError:
+        raise HTTPException(status_code=404, detail="Store not found")
+
+    return BindingResponse(**result)
 
 
 # ---------------------------------------------------------------------------
