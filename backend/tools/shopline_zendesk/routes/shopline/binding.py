@@ -77,6 +77,7 @@ class BindingResponse(BaseModel):
     zendesk_subdomain: str | None
     api_key: str | None
     has_zendesk_credentials: bool = False
+    has_api_credentials: bool = False
     managed_in_zaf: bool = True
     token_invalid: bool = False
 

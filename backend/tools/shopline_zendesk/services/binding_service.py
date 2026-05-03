@@ -120,6 +120,7 @@ def save_zendesk_credentials(
         )
 
     updated["handle"] = handle
+    updated["has_api_credentials"] = bool(zendesk_admin_email) and bool(zendesk_api_token)
     updated["managed_in_zaf"] = True
     updated["token_invalid"] = bool(store.get("token_invalid", False))
     updated["api_key"] = None
@@ -146,12 +147,14 @@ def get_binding_status(handle: str) -> dict:
             "zendesk_subdomain": None,
             "api_key": None,
             "has_zendesk_credentials": False,
+            "has_api_credentials": False,
             "managed_in_zaf": True,
             "token_invalid": token_invalid,
         }
 
     # Strip the API key from the response.
     binding["api_key"] = None
+    binding["has_api_credentials"] = bool(binding.get("zendesk_admin_email")) and bool(binding.get("zendesk_api_token"))
     binding["managed_in_zaf"] = True
     binding["token_invalid"] = token_invalid
     return binding
