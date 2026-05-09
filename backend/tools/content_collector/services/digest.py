@@ -328,6 +328,19 @@ async def generate_digest(
 
             # ---------- upsert digest ----------
             now = datetime.now(timezone.utc)
+            update_fields: dict = {
+                "generated_at": now,
+                "events_snapshot": events_snapshot,
+                "items_snapshot": items_snapshot,
+                "topics_snapshot": topics_snapshot,
+                "event_count": len(events_snapshot),
+                "item_count": len(items_snapshot),
+                "topic_count": len(topics_snapshot),
+                "lang_mix": dict(lang_counter),
+            }
+            if with_summary:
+                update_fields["summary"] = digest_summary
+
             stmt = (
                 pg_insert(Digest)
                 .values(
@@ -346,20 +359,7 @@ async def generate_digest(
                 )
                 .on_conflict_do_update(
                     index_elements=["digest_date"],
-                    set_={
-                        "generated_at": now,
-                        # Only overwrite summary when we actually generated one —
-                        # rolling today-digests (with_summary=False) must not
-                        # clobber the morning summary with NULL.
-                        **({"summary": digest_summary} if with_summary else {}),
-                        "events_snapshot": events_snapshot,
-                        "items_snapshot": items_snapshot,
-                        "topics_snapshot": topics_snapshot,
-                        "event_count": len(events_snapshot),
-                        "item_count": len(items_snapshot),
-                        "topic_count": len(topics_snapshot),
-                        "lang_mix": dict(lang_counter),
-                    },
+                    set_=update_fields,
                 )
                 .returning(Digest.id)
             )
