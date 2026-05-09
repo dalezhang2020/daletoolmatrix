@@ -263,34 +263,39 @@ async def generate_digest(
 
             # ---------- AI summary (knowledge items only) ----------
             # Only generated when with_summary=True (morning cron).
-            # We pull title_zh / summary_zh from the live items table so the
-            # briefing is in Chinese where translations exist.
+            # Query directly from items table (not snapshot window) so we
+            # always have content even if snapshots are sparse.
             digest_summary: str | None = None
             if with_summary:
-                knowledge_ids = [
-                    r["id"] for r in item_rows if r.get("source_lang") == "en"
-                ]
-                if knowledge_ids:
-                    # Re-fetch with translation fields for the summary prompt
-                    summary_rows = (
-                        await session.execute(
-                            select(
-                                Item.id,
-                                Item.title,
-                                Item.title_zh,
-                                Item.summary,
-                                Item.summary_zh,
-                                Source.name.label("source_name"),
-                                Item.category,
-                            )
-                            .join(Source, Source.id == Item.source_id)
-                            .where(Item.id.in_(knowledge_ids))
-                            .where(Item.category == "knowledge")
-                            .order_by(desc(ItemSnapshot.hot_score * Source.weight))
+                summary_rows = (
+                    await session.execute(
+                        select(
+                            Item.id,
+                            Item.title,
+                            Item.title_zh,
+                            Item.summary,
+                            Item.summary_zh,
+                            Source.name.label("source_name"),
                         )
-                    ).mappings().all()
+                        .join(Source, Source.id == Item.source_id)
+                        .where(Item.first_seen_at >= start_utc)
+                        .where(Item.first_seen_at < end_utc)
+                        .where(Item.category == "knowledge")
+                        .where(Source.lang == "en")
+                        .where(Source.enabled.is_(True))
+                        .order_by(Item.first_seen_at.desc())
+                        .limit(30)
+                    )
+                ).mappings().all()
+                if summary_rows:
                     digest_summary = await _generate_summary(
                         [dict(r) for r in summary_rows]
+                    )
+                else:
+                    logger.info(
+                        "digest: no knowledge items in window %s–%s, skipping summary",
+                        start_utc.date(),
+                        end_utc.date(),
                     )
 
             # ---------- top topics ----------
