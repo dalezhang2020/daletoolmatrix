@@ -110,8 +110,16 @@ async def run_source(slug: str) -> dict:
 
             if items and not error:
                 scored = normalize_batch(items, source.weight)
+                seen_item_ids: set[int] = set()
                 for ni, hot_score in scored:
                     item_id = await _upsert_item(session, source.id, ni)
+                    # Guard against the same external_id appearing twice in a
+                    # single fetch batch — would otherwise produce duplicate
+                    # snapshots (same item_id + captured_at) that make the
+                    # home page render the same post twice.
+                    if item_id in seen_item_ids:
+                        continue
+                    seen_item_ids.add(item_id)
                     session.add(
                         ItemSnapshot(
                             item_id=item_id,
@@ -122,7 +130,7 @@ async def run_source(slug: str) -> dict:
                             metrics=ni.metrics or {},
                         )
                     )
-                item_count = len(scored)
+                item_count = len(seen_item_ids)
 
             # Update source status
             source.last_fetched_at = started

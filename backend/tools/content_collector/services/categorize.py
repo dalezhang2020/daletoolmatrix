@@ -67,6 +67,51 @@ VALID_CATEGORIES = set(CATEGORIES.keys())
 
 
 # ---------------------------------------------------------------------------
+# Source-level pre-classification
+# ---------------------------------------------------------------------------
+
+# Some sources are single-topic publications. Any post from them maps to the
+# same category regardless of what the headline says. This is checked BEFORE
+# keyword rules and BEFORE the LLM, so Dale's Tech tab stops showing "News"
+# mislabels for IT 之家 / Hacker News / Simon Willison and similar.
+#
+# Keep this conservative: only add a source here if ~95% of its posts belong
+# to one category. Mixed sources (Weibo 热搜, 微博要闻) should stay blank so
+# per-item rules/LLM decide.
+SOURCE_FORCED_CATEGORY: dict[str, str] = {
+    # Tech / AI / dev / startups — everything they publish is "knowledge"
+    "ithome": "knowledge",
+    "hackernews": "knowledge",
+    "lobsters": "knowledge",
+    "github_trending": "knowledge",
+    "producthunt": "knowledge",
+    "simonwillison": "knowledge",
+    "hugging_face_papers": "knowledge",
+    "google_news_ai": "knowledge",
+    "stratechery": "knowledge",
+    "ai_blogs": "knowledge",
+
+    # Growth / psychology / life essays
+    "ness_labs": "growth",
+    "farnam_street": "growth",
+    "growth_blogs": "growth",
+
+    # Health
+    "stat_news": "health",
+    "health_sources": "health",
+}
+
+# Sources whose `Source.category == 'tech'`, 'china'... may also receive
+# a weaker fallback mapping after rules fail but before LLM. See
+# _fallback_by_source_category.
+_SOURCE_CATEGORY_FALLBACK: dict[str, str] = {
+    "tech": "knowledge",
+    "health": "health",
+    "growth": "growth",
+}
+
+
+# ---------------------------------------------------------------------------
 # Rule-based classifier
 # ---------------------------------------------------------------------------
 
@@ -394,15 +439,35 @@ async def _apply_categories(
     return count
 
 
+async def _fetch_source_map(
+    session: AsyncSession, source_ids: Iterable[int]
+) -> dict[int, tuple[str, str]]:
+    """Return {source_id: (slug, category)} for the given ids."""
+    ids = list(set(source_ids))
+    if not ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(Source.id, Source.slug, Source.category).where(Source.id.in_(ids))
+        )
+    ).all()
+    return {r[0]: (r[1], r[2]) for r in rows}
+
+
 async def categorize_backlog(
     batch_size: int = 50, use_llm: bool = True
 ) -> dict:
     """Classify all items with category IS NULL.
 
-    Applies rules first; whatever rules can't decide goes through the LLM
-    (if configured). If the LLM fails, items are LEFT uncategorized so the
-    next tick retries them — avoids permanent 'other' pollution when LLM
-    has a transient outage.
+    Order of attempts per item:
+      1. SOURCE_FORCED_CATEGORY    — pinned single-topic sources
+      2. keyword rules             — cheap, deterministic
+      3. LLM                       — batched fallback
+      4. _SOURCE_CATEGORY_FALLBACK — if LLM said "other" but the source is
+                                     clearly tech/health/growth, override.
+
+    If the LLM fails (network/quota), items stay NULL so the next tick
+    retries — avoids permanent 'other' pollution.
     """
     factory = session_factory()
 
@@ -414,18 +479,36 @@ async def categorize_backlog(
         ).scalars().all()
 
         if not items:
-            return {"processed": 0, "rule": 0, "llm": 0, "deferred": 0}
+            return {"processed": 0, "source": 0, "rule": 0, "llm": 0, "deferred": 0}
 
+        source_map = await _fetch_source_map(
+            session, (it.source_id for it in items)
+        )
+
+        source_hits: list[tuple[Item, str]] = []
         rule_hits: list[tuple[Item, str]] = []
         unresolved: list[Item] = []
+
         for it in items:
+            slug, _src_cat = source_map.get(it.source_id, ("", ""))
+            # Tier 1: source is pinned to one category
+            forced = SOURCE_FORCED_CATEGORY.get(slug)
+            if forced:
+                source_hits.append((it, forced))
+                continue
+            # Tier 2: title keyword rules
             cat = rule_classify(it.title)
             if cat:
                 rule_hits.append((it, cat))
             else:
                 unresolved.append(it)
 
-        # Apply rule matches
+        source_count = await _apply_categories(
+            session,
+            [x[0] for x in source_hits],
+            [x[1] for x in source_hits],
+            "source",
+        )
         rule_count = await _apply_categories(
             session,
             [x[0] for x in rule_hits],
@@ -438,16 +521,25 @@ async def categorize_backlog(
         if unresolved:
             if use_llm:
                 llm_cats = await _llm_classify_batch([it.title for it in unresolved])
-                # If the LLM call truly answered, apply results. Otherwise leave
-                # category=NULL so the next tick retries — prevents permanent
-                # 'other' pollution from a transient 400/5xx.
                 answered = any(c != "other" for c in llm_cats)
                 if answered:
-                    await _apply_categories(session, unresolved, llm_cats, "llm")
+                    # Upgrade LLM-predicted "other" using source fallback when
+                    # the source itself is a clearly-typed publication.
+                    adjusted: list[str] = []
+                    for it, pred in zip(unresolved, llm_cats):
+                        if pred == "other":
+                            slug, src_cat = source_map.get(
+                                it.source_id, ("", "")
+                            )
+                            fb = _SOURCE_CATEGORY_FALLBACK.get(src_cat)
+                            adjusted.append(fb if fb else pred)
+                        else:
+                            adjusted.append(pred)
+                    await _apply_categories(
+                        session, unresolved, adjusted, "llm"
+                    )
                     llm_count = len(unresolved)
                 else:
-                    # Leave them NULL. Do not update last_error-style fields
-                    # since categorization isn't a fetch. Just log & retry.
                     logger.info(
                         "content_collector: %d items deferred — LLM didn't "
                         "return useful labels; will retry next tick",
@@ -455,13 +547,16 @@ async def categorize_backlog(
                     )
                     deferred_count = len(unresolved)
             else:
-                # LLM explicitly disabled: commit them as 'other' so they
-                # don't block forever.
+                # LLM explicitly disabled. Use source-category fallback if
+                # available; otherwise drop to 'other' so the queue drains.
+                fallbacks: list[str] = []
+                for it in unresolved:
+                    _slug, src_cat = source_map.get(it.source_id, ("", ""))
+                    fallbacks.append(
+                        _SOURCE_CATEGORY_FALLBACK.get(src_cat, "other")
+                    )
                 await _apply_categories(
-                    session,
-                    unresolved,
-                    ["other"] * len(unresolved),
-                    "rule_fallback",
+                    session, unresolved, fallbacks, "rule_fallback"
                 )
                 deferred_count = 0
 
@@ -469,6 +564,7 @@ async def categorize_backlog(
 
     result = {
         "processed": len(items),
+        "source": source_count,
         "rule": rule_count,
         "llm": llm_count,
         "deferred": deferred_count,
@@ -478,9 +574,12 @@ async def categorize_backlog(
 
 
 async def reclassify_all_with_rules() -> dict:
-    """Re-apply rules to EVERY item (overwrites previous rule assignments).
-    Useful after tuning keywords. Leaves LLM-tagged items untouched unless
-    rules now match them.
+    """Re-apply source-level + title-rule classification to EVERY item.
+
+    Useful after tuning keywords or adding entries to SOURCE_FORCED_CATEGORY.
+    Leaves LLM-tagged items untouched UNLESS a source or rule now overrides
+    them — this is how we retroactively fix historical mislabels like IT 之家
+    posts that were previously tagged as 'news'.
     """
     factory = session_factory()
     now = datetime.now(timezone.utc)
@@ -488,7 +587,6 @@ async def reclassify_all_with_rules() -> dict:
     total = 0
 
     async with factory() as session:
-        # Stream in chunks to keep memory bounded
         offset = 0
         while True:
             chunk = (
@@ -500,11 +598,25 @@ async def reclassify_all_with_rules() -> dict:
                 break
             offset += 500
             total += len(chunk)
+
+            source_map = await _fetch_source_map(
+                session, (it.source_id for it in chunk)
+            )
+
             for it in chunk:
-                cat = rule_classify(it.title)
-                if cat and (it.category != cat):
-                    it.category = cat
-                    it.category_source = "rule"
+                slug, _src_cat = source_map.get(it.source_id, ("", ""))
+                new_cat: str | None = SOURCE_FORCED_CATEGORY.get(slug)
+                new_source_tag = "source"
+                if not new_cat:
+                    # Fall back to title rules
+                    rc = rule_classify(it.title)
+                    if rc:
+                        new_cat = rc
+                        new_source_tag = "rule"
+
+                if new_cat and it.category != new_cat:
+                    it.category = new_cat
+                    it.category_source = new_source_tag
                     it.categorized_at = now
                     changed += 1
             await session.commit()

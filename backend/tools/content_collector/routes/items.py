@@ -13,6 +13,13 @@ from ..models.source import Source
 
 router = APIRouter()
 
+# Half-life for the time-decay ranking, in hours. An item halves in rank
+# influence every 12 hours, so 48h-old posts sit at 1/16 of their peak score.
+_HALFLIFE_HOURS = 12.0
+# Lower bound on decay so extremely old items can still appear when nothing
+# fresher exists, instead of rounding to zero.
+_MIN_DECAY = 0.02
+
 
 @router.get("")
 async def list_items(
@@ -28,22 +35,51 @@ async def list_items(
     sort: str = Query(
         "ranked",
         pattern="^(ranked|latest|hot)$",
-        description="ranked = hot_score * source.weight; latest = first_seen_at desc; hot = hot_score desc",
+        description=(
+            "ranked = hot_score * source.weight * time-decay (default); "
+            "latest = first_seen_at desc; "
+            "hot = hot_score desc (ignores source weight and recency)"
+        ),
     ),
     db: AsyncSession = Depends(get_content_collector_db),
 ):
-    """Top items in the last N days, ranked by their most recent hot_score."""
+    """Top items in the last N days.
+
+    Dedup strategy: one row per Item, using each item's single most recent
+    snapshot. Duplicates in ItemSnapshot (same item_id + captured_at) used to
+    cause the same post to appear twice in the UI — this is now prevented by
+    joining through a GROUP BY subquery and tie-breaking on MAX(snapshot.id).
+    """
     since = datetime.now(timezone.utc) - timedelta(days=days)
 
-    # Latest snapshot per item within the window
+    # One latest snapshot per item within the window.
+    # MAX(id) as the tiebreaker so even if two snapshots share captured_at
+    # we still pick exactly one row per item.
     latest = (
         select(
             ItemSnapshot.item_id.label("item_id"),
             func.max(ItemSnapshot.captured_at).label("captured_at"),
+            func.max(ItemSnapshot.id).label("snap_id"),
         )
         .where(ItemSnapshot.captured_at >= since)
         .group_by(ItemSnapshot.item_id)
         .subquery()
+    )
+
+    # Time-decay factor: 2 ** (-age_hours / halflife), clamped to _MIN_DECAY.
+    # Age is measured from first_seen_at (when WE first saw the post); that's
+    # more honest for ranking than published_at which many sources lie about.
+    now_utc = datetime.now(timezone.utc)
+    age_hours = func.extract(
+        "epoch", now_utc - Item.first_seen_at
+    ) / 3600.0
+    # Postgres-friendly expression: GREATEST(MIN_DECAY, POWER(0.5, age_h / H))
+    decay = func.greatest(
+        _MIN_DECAY,
+        func.power(0.5, age_hours / _HALFLIFE_HOURS),
+    )
+    ranked_expr = (ItemSnapshot.hot_score * Source.weight * decay).label(
+        "ranked_score"
     )
 
     q = (
@@ -65,18 +101,15 @@ async def list_items(
             ItemSnapshot.hot_raw,
             ItemSnapshot.rank,
             ItemSnapshot.captured_at,
-            (ItemSnapshot.hot_score * Source.weight).label("ranked_score"),
+            ranked_expr,
         )
         .join(Source, Source.id == Item.source_id)
         .join(latest, latest.c.item_id == Item.id)
         .join(
             ItemSnapshot,
-            (ItemSnapshot.item_id == latest.c.item_id)
-            & (ItemSnapshot.captured_at == latest.c.captured_at),
+            ItemSnapshot.id == latest.c.snap_id,
         )
         .where(Item.first_seen_at >= since)
-        .order_by((ItemSnapshot.hot_score * Source.weight).desc())
-        .limit(limit)
     )
 
     if lang:
@@ -90,12 +123,14 @@ async def list_items(
         if excluded:
             q = q.where(Item.category.notin_(excluded))
 
-    # Swap the ORDER BY per requested sort mode
+    # Order + limit applied last so sort switching doesn't leak double limits.
     if sort == "latest":
-        q = q.order_by(None).order_by(Item.first_seen_at.desc()).limit(limit)
+        q = q.order_by(Item.first_seen_at.desc())
     elif sort == "hot":
-        q = q.order_by(None).order_by(ItemSnapshot.hot_score.desc()).limit(limit)
-    # else: "ranked" is already the default ORDER BY
+        q = q.order_by(ItemSnapshot.hot_score.desc())
+    else:  # "ranked"
+        q = q.order_by(ranked_expr.desc())
+    q = q.limit(limit)
 
     rows = (await db.execute(q)).mappings().all()
 

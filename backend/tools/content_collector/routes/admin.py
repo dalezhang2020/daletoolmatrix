@@ -68,7 +68,7 @@ async def trigger_categorize_drain(
     use_llm: bool = True, max_batches: int = 40,
 ):
     """Repeatedly classify until the backlog is empty (or max_batches hit)."""
-    total = {"processed": 0, "rule": 0, "llm": 0, "fallback": 0}
+    total = {"processed": 0, "source": 0, "rule": 0, "llm": 0, "deferred": 0}
     for _ in range(max_batches):
         r = await categorize_backlog(use_llm=use_llm)
         for k in total:
@@ -80,5 +80,50 @@ async def trigger_categorize_drain(
 
 @router.post("/reclassify-rules")
 async def trigger_reclassify_rules():
-    """Re-apply keyword rules to every item (overwrites prior rule tags)."""
+    """Re-apply source-level + keyword rules to every item.
+
+    Safe to call repeatedly — only items whose category would change get
+    touched. This is the one-shot "fix historical mislabels" button.
+    """
     return await reclassify_all_with_rules()
+
+
+@router.post("/dedupe-snapshots")
+async def trigger_dedupe_snapshots():
+    """Remove duplicate ItemSnapshot rows (same item_id + captured_at).
+
+    These duplicates used to cause the same item to render twice on the
+    home page. Keeps the row with the highest id per (item_id, captured_at)
+    and deletes the rest.
+    """
+    from sqlalchemy import text
+
+    from ..database import session_factory
+
+    factory = session_factory()
+    async with factory() as session:
+        # NB: this assumes the schema name is available in search_path for the
+        # session, which get_content_collector_db sets up. Using a raw DELETE
+        # because SQLAlchemy doesn't express "keep MAX(id) per group" cleanly.
+        result = await session.execute(
+            text(
+                """
+                DELETE FROM content_collector.item_snapshots s
+                USING (
+                    SELECT item_id,
+                           captured_at,
+                           MAX(id) AS keep_id
+                    FROM content_collector.item_snapshots
+                    GROUP BY item_id, captured_at
+                    HAVING COUNT(*) > 1
+                ) d
+                WHERE s.item_id = d.item_id
+                  AND s.captured_at = d.captured_at
+                  AND s.id <> d.keep_id
+                """
+            )
+        )
+        deleted = result.rowcount or 0
+        await session.commit()
+
+    return {"deleted": deleted}
