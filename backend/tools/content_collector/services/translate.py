@@ -58,9 +58,9 @@ _SYSTEM_PROMPT = (
     "Claude Opus 4.7, Gemini 2.5, MMLU, etc.\n\n"
     "2. Translate the SURROUNDING text into natural Chinese that a "
     "Chinese-speaking software engineer would actually use.\n\n"
-    "3. Keep translations CONCISE — similar length or shorter than the "
-    "English original. Summary translations should fit roughly 60-120 "
-    "Chinese characters.\n\n"
+    "3. Keep translations FAITHFUL — preserve the full meaning of the "
+    "original. Do not summarize or compress. If the original is long, "
+    "the translation should be similarly complete.\n\n"
     "4. Do NOT translate URLs, code, file paths, or handles like @swyx.\n\n"
     "5. Return ONLY a JSON object of this shape, no prose, no markdown:\n"
     "   {\"r\": [{\"i\": <index>, \"t\": \"<title_zh>\", \"s\": \"<summary_zh or empty string>\"}]}\n"
@@ -105,8 +105,9 @@ async def _llm_translate_batch(
     for i, (title, summary) in enumerate(entries):
         lines.append(f"{i}. TITLE: {title[:250]}")
         if summary:
-            # Cap summary to 400 chars — anything longer is noise for a preview
-            lines.append(f"   SUMMARY: {summary[:400]}")
+            # 2000 chars covers most summaries fully; podcast transcripts
+            # are excluded at the frontend level anyway.
+            lines.append(f"   SUMMARY: {summary[:2000]}")
     user_payload = "\n".join(lines)
 
     try:

@@ -204,8 +204,8 @@ class FollowBuildersPodcastsFetcher(BaseFetcher):
 
             ext_id = str(ep.get("guid") or _digest(url, title))
             show = ep.get("name") or "AI podcast"
-            # Use first 280 chars of transcript as summary so the classifier
-            # and the UI preview both have something substantive to show.
+            # Store the full transcript — it's the primary value of this
+            # source. The frontend decides how much to surface.
             transcript = (ep.get("transcript") or "").strip()
 
             out.append(
@@ -214,7 +214,7 @@ class FollowBuildersPodcastsFetcher(BaseFetcher):
                     title=f"{show}: {title}",
                     url=url,
                     author=show,
-                    summary=transcript[:500] if transcript else None,
+                    summary=transcript if transcript else None,
                     published_at=_iso_to_dt(ep.get("publishedAt")),
                     hot_raw=None,
                     metrics={
