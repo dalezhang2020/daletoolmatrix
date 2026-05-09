@@ -22,19 +22,6 @@ class SimonWillisonFeed(RSSFetcher):
     strip_source_suffix = False
 
 
-class SmolAINews(RSSFetcher):
-    slug = "smol_ai_news"
-    name = "smol.ai AI News"
-    lang = "en"
-    category = "tech"
-    region = "global"
-    interval_sec = 4 * 60 * 60
-    weight = 1.2
-    feed_url = "https://news.smol.ai/rss.xml"
-    home_url = "https://news.smol.ai"
-    strip_source_suffix = False
-
-
 class HuggingFaceDailyPapers(RSSFetcher):
     slug = "hf_daily_papers"
     name = "Hugging Face Daily Papers"

@@ -5,13 +5,13 @@ already installed). Handles both RSS and Atom.
 
 Subclass usage:
 
-    class GoogleNewsUSTop(RSSFetcher):
-        slug = "gnews_us_top"
-        name = "Google News · US 头条"
+    class GoogleNewsAISearch(RSSFetcher):
+        slug = "gnews_ai_search"
+        name = "Google News · AI"
         lang = "en"
-        category = "world"
-        region = "us"
-        feed_url = "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en"
+        category = "tech"
+        region = "global"
+        feed_url = "https://news.google.com/rss/search?q=AI&hl=en-US&gl=US&ceid=US:en"
 
 Hot-score semantics: RSS rarely carries engagement data. We fall back to
 rank-based scoring in services/score.py (first item = highest score).

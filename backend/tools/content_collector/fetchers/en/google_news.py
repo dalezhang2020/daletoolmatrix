@@ -1,47 +1,17 @@
-"""Google News — top stories / topic feeds / search queries via RSS.
-
-Three sources:
-  - gnews_us_top     US headlines (→ news)
-  - gnews_tech       Technology topic (→ knowledge)
-  - gnews_ai_search  'AI' search query (→ knowledge)
+"""Google News via RSS — AI search query only.
 
 Google News RSS carries no engagement data; ingest falls back to rank-based
 scoring (first item = hottest). The `<source>` tag per item is stripped from
 the headline (e.g. "...  - NYT") and kept as metadata for display.
+
+Why only gnews_ai_search: the US-top and Technology topic feeds were mostly
+entertainment/sports/gaming noise once we looked at real data; this targeted
+search query produces much higher signal for AI coverage specifically.
 """
 
 from __future__ import annotations
 
 from ..rss_base import RSSFetcher
-
-
-class GoogleNewsUSTop(RSSFetcher):
-    slug = "gnews_us_top"
-    name = "Google News · US 头条"
-    lang = "en"
-    category = "world"
-    region = "us"
-    interval_sec = 60 * 60
-    weight = 1.1
-    feed_url = "https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en"
-    home_url = "https://news.google.com"
-
-
-class GoogleNewsTech(RSSFetcher):
-    slug = "gnews_tech"
-    name = "Google News · Technology"
-    lang = "en"
-    category = "tech"
-    region = "us"
-    interval_sec = 60 * 60
-    weight = 1.0
-    # Stable topic id for "Technology" on Google News EN-US.
-    feed_url = (
-        "https://news.google.com/rss/topics/"
-        "CAAqJggKIiBDQkFTRWdvSUwyMHZNRGRqTVhZU0FtVnVHZ0pWVXlnQVAB"
-        "?hl=en-US&gl=US&ceid=US:en"
-    )
-    home_url = "https://news.google.com"
 
 
 class GoogleNewsAISearch(RSSFetcher):
