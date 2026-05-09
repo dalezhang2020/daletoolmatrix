@@ -173,8 +173,7 @@ async def list_items(
                 "ranked_score": float(r["ranked_score"]) if r["ranked_score"] is not None else None,
                 "published_at": r["published_at"].isoformat() if r["published_at"] else None,
                 "first_seen_at": r["first_seen_at"].isoformat() if r["first_seen_at"] else None,
-                "captured_at": r["captured_at"].isoformat() if r["captured_at"] else None,
-            }
+                "captured_at": r["captured_at"].isoformat() if r["captured_at"] else None,            }
             for r in rows
         ],
     }
