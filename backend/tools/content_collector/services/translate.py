@@ -136,8 +136,12 @@ async def _llm_translate_batch(titles: list[str]) -> list[str | None]:
         try:
             idx = int(r["i"])
             text = str(r["t"]).strip()
-            if 0 <= idx < len(titles) and text and text != titles[idx]:
-                out[idx] = text[:500]  # cap to column size
+            if 0 <= idx < len(titles) and text:
+                # Cap to column size. If LLM returned the same string (e.g.
+                # 'llm-gemini 0.31' has no natural translation), we store
+                # the English verbatim — that's a valid "no-op translation"
+                # and marks the row so we don't retry forever.
+                out[idx] = text[:500]
         except (KeyError, ValueError, TypeError):
             continue
     return out
