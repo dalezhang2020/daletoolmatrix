@@ -80,48 +80,58 @@ def start_scheduler() -> None:
     _scheduler = AsyncIOScheduler()
     registry = get_registry()
 
+    # Unify all source fetchers to a 1-hour cadence. Per-source intervals
+    # (e.g. 30min, 2h) were useful earlier but add schedule noise and never
+    # translate into more useful data — the UI refreshes every 2h anyway.
+    FETCH_INTERVAL_SEC = 60 * 60
+
     for slug, fetcher in registry.items():
         _scheduler.add_job(
             run_source,
-            trigger=IntervalTrigger(seconds=fetcher.interval_sec),
+            trigger=IntervalTrigger(seconds=FETCH_INTERVAL_SEC),
             args=[slug],
             id=f"content_collector:{slug}",
             replace_existing=True,
             max_instances=1,
             coalesce=True,
         )
-        logger.info(
-            "content_collector: scheduled %s every %ds", slug, fetcher.interval_sec
-        )
+    logger.info(
+        "content_collector: scheduled %d sources every %ds",
+        len(registry),
+        FETCH_INTERVAL_SEC,
+    )
 
-    # Topic clustering every 30 min — cheap; safe to run often
+    # Topic clustering every hour — aligned with fetch cadence so clusters
+    # reflect each new batch without rerunning uselessly between fetches.
     _scheduler.add_job(
         recluster_all,
-        trigger=IntervalTrigger(minutes=30),
+        trigger=IntervalTrigger(hours=1),
         id="content_collector:cluster",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
     )
-    # Event detection right after — 30 min aligned
+    # Event detection right after fetch cycle — 1h aligned
     _scheduler.add_job(
         detect_events,
-        trigger=IntervalTrigger(minutes=30),
+        trigger=IntervalTrigger(hours=1),
         id="content_collector:events",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
     )
-    # Categorize backlog every 5 min — runs rules fast, LLM in small batches
+    # Categorize backlog every 10 min — fetchers arrive hourly, but we still
+    # want freshly-arrived items classified within 10 min of landing so the
+    # dashboard filters are never empty.
     _scheduler.add_job(
         categorize_backlog,
-        trigger=IntervalTrigger(minutes=5),
+        trigger=IntervalTrigger(minutes=10),
         id="content_collector:categorize",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
     )
-    logger.info("content_collector: scheduled cluster + event jobs (30min)")
+    logger.info("content_collector: scheduled cluster + events (1h), categorize (10m)")
 
     # Daily digest snapshot — 08:00 Eastern (Dale's timezone).
     # Captures YESTERDAY's completed day for morning reading.
