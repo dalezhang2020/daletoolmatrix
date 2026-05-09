@@ -49,6 +49,8 @@ class ITHomeFetcher(BaseFetcher):
                     rank=rank,
                 )
             )
-            if rank >= 30:
+            # Only keep the top 10 — IT 之家's hot list drops sharply
+            # after rank 10 and the tail is mostly filler.
+            if rank >= 10:
                 break
         return items

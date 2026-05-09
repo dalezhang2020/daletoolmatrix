@@ -47,6 +47,11 @@ class HuggingFaceDailyPapers(BaseFetcher):
 
     _API = "https://huggingface.co/api/daily_papers"
 
+    # Quality filter: HF Daily Papers lists ~30 submissions per day, but
+    # most sit at 0-1 upvotes. 15 = roughly top-20% of a given day's list,
+    # which keeps the signal high at the cost of missing some late bloomers.
+    MIN_ENGAGEMENT = 15
+
     async def fetch(self) -> list[NewsItem]:
         data = await fetch_json(self._API, params={"limit": 30})
         out: list[NewsItem] = []
@@ -63,6 +68,10 @@ class HuggingFaceDailyPapers(BaseFetcher):
             upvotes = int(paper.get("upvotes") or 0)
             comments = int(row.get("numComments") or 0)
             hot_raw = float(upvotes + comments * 2)
+
+            # Drop papers the community hasn't engaged with. Noise filter.
+            if hot_raw < self.MIN_ENGAGEMENT:
+                continue
 
             published_at: datetime | None = None
             pub_str = row.get("publishedAt") or paper.get("publishedAt")

@@ -76,23 +76,21 @@ class FollowBuildersXFetcher(BaseFetcher):
                 if not (tid and url and text):
                     continue
 
-                # Skip obvious low-signal posts: too short to matter, or
-                # tweets with zero engagement and no text body.
-                stripped = text.strip()
-                engagement = (
-                    int(tw.get("likes") or 0)
-                    + int(tw.get("retweets") or 0)
-                    + int(tw.get("replies") or 0)
-                )
-                if len(stripped) < 60 and engagement < 20:
-                    continue
-
+                # Engagement gate: require meaningful traction. 100 combined
+                # (likes + 3*retweets + 2*replies would be ~30 likes alone,
+                # or ~20 likes + 5 retweets) filters out everyday chatter
+                # from the 25 curated builders and keeps the posts that
+                # people actually reacted to.
                 likes = int(tw.get("likes") or 0)
                 retweets = int(tw.get("retweets") or 0)
                 replies = int(tw.get("replies") or 0)
-                # Engagement as the hot_raw signal. Retweets are worth more
-                # than likes (higher commitment), replies too (conversation).
-                hot_raw = float(likes + retweets * 3 + replies * 2)
+                engagement = likes + retweets * 3 + replies * 2
+                if engagement < 100:
+                    continue
+
+                # Still skip pure link drops and one-word tweets
+                if len(text.strip()) < 40:
+                    continue
 
                 # Title = "@handle: first line of tweet, trimmed"
                 first_line = text.splitlines()[0][:160]
@@ -106,7 +104,7 @@ class FollowBuildersXFetcher(BaseFetcher):
                         author=display_name,
                         summary=text[:500],
                         published_at=_iso_to_dt(tw.get("createdAt")),
-                        hot_raw=hot_raw,
+                        hot_raw=float(engagement),
                         metrics={
                             "likes": likes,
                             "retweets": retweets,

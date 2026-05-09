@@ -27,6 +27,12 @@ class HackerNewsFetcher(BaseFetcher):
     weight = 1.0
     home_url = "https://news.ycombinator.com/"
 
+    # Quality filter: drop low-signal submissions. 150 points means the
+    # story hit the top tier of discussion — the "must-read" HN tier.
+    # Below that are mostly experiments, niche shows, and not-yet-validated
+    # submissions that would swamp a daily reading list.
+    MIN_POINTS = 150
+
     async def fetch(self) -> list[NewsItem]:
         html = await fetch_text("https://news.ycombinator.com/")
         soup = BeautifulSoup(html, "html.parser")
@@ -47,6 +53,10 @@ class HackerNewsFetcher(BaseFetcher):
                 m = _SCORE_RE.search(score_el.get_text())
                 if m:
                     score_val = float(m.group(0))
+
+            # Skip unscored posts and anything below the quality threshold.
+            if score_val is None or score_val < self.MIN_POINTS:
+                continue
 
             items.append(
                 NewsItem(
