@@ -228,6 +228,7 @@ async def generate_digest(
                     select(
                         Item.id,
                         Item.title,
+                        Item.title_zh,
                         Item.url,
                         Source.slug.label("source_slug"),
                         Source.name.label("source_name"),
@@ -251,6 +252,7 @@ async def generate_digest(
                 {
                     "id": r["id"],
                     "title": r["title"],
+                    "title_zh": r["title_zh"],
                     "url": r["url"],
                     "source_slug": r["source_slug"],
                     "source_name": r["source_name"],
