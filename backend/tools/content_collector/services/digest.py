@@ -243,9 +243,12 @@ async def generate_digest(
                         (ItemSnapshot.item_id == latest.c.item_id)
                         & (ItemSnapshot.captured_at == latest.c.captured_at),
                     )
-                    # Digest only covers knowledge/tech — news is excluded
-                    # so the daily snapshot stays focused on AI & tech.
+                    # Digest only covers knowledge/tech — news is excluded.
+                    # We filter by BOTH item category AND source category so
+                    # that BBC/NYT items tagged 'knowledge' by the LLM are
+                    # still excluded (they're news sources, not tech sources).
                     .where(Item.category == "knowledge")
+                    .where(Source.category == "tech")
                     .where(Source.enabled.is_(True))
                     .order_by(desc(ItemSnapshot.hot_score * Source.weight))
                     .limit(20)
