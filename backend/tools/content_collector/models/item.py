@@ -61,6 +61,14 @@ class Item(Base):
     # Free-form, source-specific extras (icons, labels, etc.)
     extra: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
 
+    # Content category (filled by the classifier service). NULL = pending.
+    category: Mapped[Optional[str]] = mapped_column(String(24), nullable=True, index=True)
+    # 'rule' | 'llm' | 'manual'  — for debugging and later re-classification
+    category_source: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    categorized_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
 
 class ItemSnapshot(Base):
     __tablename__ = "item_snapshots"

@@ -18,6 +18,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from ..config import content_collector_settings
 from ..fetchers.registry import get_registry
 from .cluster import recluster_all
+from .categorize import categorize_backlog
 from .digest import generate_digest
 from .events import detect_events
 from .ingest import run_source
@@ -42,12 +43,18 @@ def _start_initial_runs() -> None:
             except Exception:
                 logger.exception("initial fetch failed for %s", slug)
 
-        # Once we have fresh items, do an initial cluster + event pass
+        # Once we have fresh items, do an initial cluster + event + category pass
         try:
             await recluster_all()
             await detect_events()
+            # Run categorize a few times to drain the initial backlog (each call
+            # handles 50; we usually have 300-500 items on first boot).
+            for _ in range(20):
+                r = await categorize_backlog()
+                if r.get("processed", 0) == 0:
+                    break
         except Exception:
-            logger.exception("initial cluster/events failed")
+            logger.exception("initial cluster/events/categorize failed")
 
         # And an initial digest for today so the UI has something to show.
         try:
@@ -101,6 +108,15 @@ def start_scheduler() -> None:
         detect_events,
         trigger=IntervalTrigger(minutes=30),
         id="content_collector:events",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    # Categorize backlog every 5 min — runs rules fast, LLM in small batches
+    _scheduler.add_job(
+        categorize_backlog,
+        trigger=IntervalTrigger(minutes=5),
+        id="content_collector:categorize",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
