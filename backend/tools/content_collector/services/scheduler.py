@@ -22,6 +22,7 @@ from .categorize import categorize_backlog
 from .digest import generate_digest
 from .events import detect_events
 from .ingest import run_source
+from .translate import translate_backlog
 
 logger = logging.getLogger(__name__)
 
@@ -150,9 +151,25 @@ def start_scheduler() -> None:
         max_instances=1,
         coalesce=True,
     )
+
+    # Translation — same 6h cadence as the LLM classifier, capped at 30
+    # items per call (roughly $0.001 per run). Only touches EN-source
+    # items in knowledge/news categories.
+    async def _translate():
+        return await translate_backlog(llm_cap=30)
+
+    _scheduler.add_job(
+        _translate,
+        trigger=IntervalTrigger(hours=6),
+        id="content_collector:translate",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     logger.info(
         "content_collector: scheduled cluster+events (2h), "
-        "categorize rules (30m), categorize LLM (6h, cap=100)"
+        "categorize rules (30m), categorize LLM (6h, cap=100), "
+        "translate (6h, cap=30)"
     )
 
     # Daily digest snapshot — 08:00 Eastern (Dale's timezone).

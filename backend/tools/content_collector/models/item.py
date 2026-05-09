@@ -69,6 +69,16 @@ class Item(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # Chinese translation (filled by the translator service).
+    # Applies only to English-source items; Chinese items leave these NULL.
+    # Proper nouns (brand names, product names, people) are preserved as-is
+    # per the translator system prompt.
+    title_zh: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    summary_zh: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    translated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
 
 class ItemSnapshot(Base):
     __tablename__ = "item_snapshots"

@@ -12,6 +12,7 @@ from ..services.cluster import recluster_all
 from ..services.digest import generate_digest
 from ..services.events import detect_events
 from ..services.ingest import run_source
+from ..services.translate import translate_backlog, translate_drain
 
 router = APIRouter()
 
@@ -102,6 +103,22 @@ async def trigger_reclassify_rules():
     touched. This is the one-shot "fix historical mislabels" button.
     """
     return await reclassify_all_with_rules()
+
+
+@router.post("/translate")
+async def trigger_translate(llm_cap: int = 30):
+    """Translate one batch of untranslated EN knowledge/news items."""
+    return await translate_backlog(llm_cap=llm_cap)
+
+
+@router.post("/translate-drain")
+async def trigger_translate_drain(
+    max_batches: int = 50, llm_cap_per_batch: int = 30
+):
+    """Drain the translation backlog (bounded by max_batches)."""
+    return await translate_drain(
+        max_batches=max_batches, llm_cap_per_batch=llm_cap_per_batch
+    )
 
 
 @router.post("/dedupe-snapshots")

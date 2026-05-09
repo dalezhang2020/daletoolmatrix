@@ -90,6 +90,8 @@ async def list_items(
             Item.mobile_url,
             Item.author,
             Item.summary,
+            Item.title_zh,
+            Item.summary_zh,
             Item.published_at,
             Item.first_seen_at,
             Item.category,
@@ -141,10 +143,12 @@ async def list_items(
             {
                 "id": r["id"],
                 "title": r["title"],
+                "title_zh": r["title_zh"],
                 "url": r["url"],
                 "mobile_url": r["mobile_url"],
                 "author": r["author"],
                 "summary": r["summary"],
+                "summary_zh": r["summary_zh"],
                 "source": {
                     "slug": r["source_slug"],
                     "name": r["source_name"],
