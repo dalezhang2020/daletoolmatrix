@@ -90,6 +90,10 @@ SOURCE_FORCED_CATEGORY: dict[str, str] = {
     "google_news_ai": "knowledge",
     "stratechery": "knowledge",
     "ai_blogs": "knowledge",
+    # Follow Builders — curated AI X/blog/podcast feed
+    "follow_builders_x": "knowledge",
+    "follow_builders_blogs": "knowledge",
+    "follow_builders_podcasts": "knowledge",
 
     # Growth / psychology / life essays
     "ness_labs": "growth",
