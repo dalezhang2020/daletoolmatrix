@@ -105,16 +105,3 @@ class HuggingFaceDailyPapers(BaseFetcher):
                 )
             )
         return out
-
-
-class Stratechery(RSSFetcher):
-    slug = "stratechery"
-    name = "Stratechery"
-    lang = "en"
-    category = "tech"
-    region = "global"
-    interval_sec = 6 * 60 * 60
-    weight = 1.1  # free posts only; paywalled content is partial in feed
-    feed_url = "https://stratechery.com/feed/"
-    home_url = "https://stratechery.com"
-    strip_source_suffix = False

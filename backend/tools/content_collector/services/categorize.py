@@ -46,11 +46,12 @@ CATEGORIES: dict[str, dict] = {
         "en": "AI · Tech · Startups",
         "desc": "AI, LLMs, dev tools, hardware, open source, Product Hunt, VC",
     },
+    # 'other' kept internally as a fallback bucket so the classifier always
+    # has somewhere to put unmatched items, but the UI doesn't surface it.
     "other": {
         "zh": "其他",
         "en": "Other",
-        "desc": "Health, growth, entertainment, sports, gaming, lifestyle — "
-                "not of primary interest; kept for completeness.",
+        "desc": "Fallback bucket — hidden from the UI by default.",
     },
 }
 
@@ -73,14 +74,9 @@ SOURCE_FORCED_CATEGORY: dict[str, str] = {
     # Tech / AI / dev / startups — everything they publish is "knowledge"
     "ithome": "knowledge",
     "hackernews": "knowledge",
-    "lobsters": "knowledge",
     "github_trending": "knowledge",
-    "producthunt": "knowledge",
-    "simonwillison": "knowledge",
-    "hugging_face_papers": "knowledge",
-    "google_news_ai": "knowledge",
-    "stratechery": "knowledge",
-    "ai_blogs": "knowledge",
+    "simon_willison": "knowledge",
+    "hf_daily_papers": "knowledge",
     # Follow Builders — curated AI X/blog/podcast feed
     "follow_builders_x": "knowledge",
     "follow_builders_blogs": "knowledge",
