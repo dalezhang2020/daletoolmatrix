@@ -339,7 +339,16 @@ async def _llm_classify_batch(titles: list[str]) -> list[str]:
                     "max_tokens": 1500,
                 },
             )
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                # Azure returns the useful error body; surface it so we can
+                # diagnose issues like content-filter rejects, quota limits,
+                # or model mismatches that would otherwise be invisible.
+                logger.warning(
+                    "content_collector: LLM classify HTTP %d — body: %s",
+                    resp.status_code,
+                    resp.text[:500],
+                )
+                return ["other"] * len(titles)
             content = resp.json()["choices"][0]["message"]["content"]
             parsed = json.loads(content)
             results = parsed.get("results") or []
@@ -387,7 +396,9 @@ async def categorize_backlog(
     """Classify all items with category IS NULL.
 
     Applies rules first; whatever rules can't decide goes through the LLM
-    (if configured), otherwise stays 'other' with source_tag='rule_fallback'.
+    (if configured). If the LLM fails, items are LEFT uncategorized so the
+    next tick retries them — avoids permanent 'other' pollution when LLM
+    has a transient outage.
     """
     factory = session_factory()
 
@@ -399,7 +410,7 @@ async def categorize_backlog(
         ).scalars().all()
 
         if not items:
-            return {"processed": 0, "rule": 0, "llm": 0, "fallback": 0}
+            return {"processed": 0, "rule": 0, "llm": 0, "deferred": 0}
 
         rule_hits: list[tuple[Item, str]] = []
         unresolved: list[Item] = []
@@ -419,27 +430,36 @@ async def categorize_backlog(
         )
 
         llm_count = 0
-        fallback_count = 0
+        deferred_count = 0
         if unresolved:
             if use_llm:
                 llm_cats = await _llm_classify_batch([it.title for it in unresolved])
-                # If LLM really answered (not just all 'other' fallback), tag llm;
-                # otherwise tag as rule_fallback so we can see how LLM is doing.
+                # If the LLM call truly answered, apply results. Otherwise leave
+                # category=NULL so the next tick retries — prevents permanent
+                # 'other' pollution from a transient 400/5xx.
                 answered = any(c != "other" for c in llm_cats)
-                tag = "llm" if answered else "rule_fallback"
-                await _apply_categories(session, unresolved, llm_cats, tag)
                 if answered:
+                    await _apply_categories(session, unresolved, llm_cats, "llm")
                     llm_count = len(unresolved)
                 else:
-                    fallback_count = len(unresolved)
+                    # Leave them NULL. Do not update last_error-style fields
+                    # since categorization isn't a fetch. Just log & retry.
+                    logger.info(
+                        "content_collector: %d items deferred — LLM didn't "
+                        "return useful labels; will retry next tick",
+                        len(unresolved),
+                    )
+                    deferred_count = len(unresolved)
             else:
+                # LLM explicitly disabled: commit them as 'other' so they
+                # don't block forever.
                 await _apply_categories(
                     session,
                     unresolved,
                     ["other"] * len(unresolved),
                     "rule_fallback",
                 )
-                fallback_count = len(unresolved)
+                deferred_count = 0
 
         await session.commit()
 
@@ -447,7 +467,7 @@ async def categorize_backlog(
         "processed": len(items),
         "rule": rule_count,
         "llm": llm_count,
-        "fallback": fallback_count,
+        "deferred": deferred_count,
     }
     logger.info("content_collector: categorize_backlog %s", result)
     return result
