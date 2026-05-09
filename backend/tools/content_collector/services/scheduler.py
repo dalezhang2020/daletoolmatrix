@@ -104,7 +104,10 @@ def start_scheduler() -> None:
         FETCH_INTERVAL_SEC,
     )
 
-    # Topic clustering every 2 hours — aligned with fetch cadence.
+    # Topic clustering — DISABLED. Dale decided Topics is off the dashboard;
+    # cluster rows become only an Events input. We still need topics for
+    # detect_events(), but clustering every 2h adds no value beyond what
+    # runs alongside detect_events below.
     _scheduler.add_job(
         recluster_all,
         trigger=IntervalTrigger(hours=2),

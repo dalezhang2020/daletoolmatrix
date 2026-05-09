@@ -29,10 +29,21 @@ from ..models.topic import Topic, TopicItem
 
 logger = logging.getLogger(__name__)
 
-# Tunables — constants for now, elevate to config if product needs it
+# Tunables — constants for now, elevate to config if product needs it.
+# Thresholds tightened: we only surface events Dale actually wants to see.
 MIN_SOURCE_DIVERSITY = 3
-MIN_TOTAL_SCORE = 150.0
+MIN_ITEM_COUNT = 5
+MIN_TOTAL_SCORE = 500.0
 MAX_WINDOW_HOURS = 24
+
+# Only topics whose majority items are in these categories become events.
+# Entertainment/sports/gaming/social-drama topics reliably hit the multi-
+# source threshold but are explicitly not what Dale tracks.
+ALLOWED_EVENT_CATEGORIES = {"news", "knowledge"}
+# Of those allowed, require at least this fraction of items to agree on
+# category. Stops a mostly-entertainment topic from getting classified as
+# an event just because 1 of 5 items happens to be tagged 'news'.
+MIN_CATEGORY_MAJORITY = 0.6
 
 
 def _signature(lang: str, keywords: list[str]) -> str:
@@ -45,8 +56,9 @@ def _signature(lang: str, keywords: list[str]) -> str:
 
 async def _topic_stats(
     session: AsyncSession, topic_id: int, since: datetime
-) -> tuple[int, float, list[int]]:
-    """Return (distinct_source_count, cumulative_score, member_item_ids)."""
+) -> tuple[int, float, list[int], dict[str, int]]:
+    """Return (distinct_source_count, cumulative_score, member_item_ids,
+    category_counts)."""
     # Gather member item ids
     item_ids = (
         await session.execute(
@@ -54,7 +66,7 @@ async def _topic_stats(
         )
     ).scalars().all()
     if not item_ids:
-        return 0, 0.0, []
+        return 0, 0.0, [], {}
 
     stats = (
         await session.execute(
@@ -68,12 +80,27 @@ async def _topic_stats(
             .join(Source, Source.id == Item.source_id)
             .join(ItemSnapshot, ItemSnapshot.item_id == Item.id)
             .where(Item.id.in_(list(item_ids)))
+            .where(Source.enabled.is_(True))
             .where(Item.first_seen_at >= since)
         )
     ).first()
     diversity = int(stats[0] or 0)
     score = float(stats[1] or 0.0)
-    return diversity, score, [int(i) for i in item_ids]
+
+    # Category distribution within the topic — used to filter out events
+    # that don't belong in Dale's interest categories.
+    cat_rows = (
+        await session.execute(
+            select(Item.category, func.count(Item.id))
+            .where(Item.id.in_(list(item_ids)))
+            .group_by(Item.category)
+        )
+    ).all()
+    category_counts: dict[str, int] = {
+        (c or "_unknown"): int(n) for c, n in cat_rows
+    }
+
+    return diversity, score, [int(i) for i in item_ids], category_counts
 
 
 async def detect_events() -> dict:
@@ -93,10 +120,25 @@ async def detect_events() -> dict:
             ).scalars().all()
 
             for topic in topics:
-                diversity, score, item_ids = await _topic_stats(
+                diversity, score, item_ids, category_counts = await _topic_stats(
                     session, topic.id, since
                 )
-                if diversity < MIN_SOURCE_DIVERSITY or score < MIN_TOTAL_SCORE:
+                if (
+                    diversity < MIN_SOURCE_DIVERSITY
+                    or score < MIN_TOTAL_SCORE
+                    or len(item_ids) < MIN_ITEM_COUNT
+                ):
+                    continue
+
+                # Category gate: the majority of items must be in one of
+                # Dale's tracked categories. Drops entertainment / sports /
+                # gaming / gossip topics before they hit the Events tab.
+                total_items = sum(category_counts.values()) or 1
+                allowed_items = sum(
+                    n for c, n in category_counts.items()
+                    if c in ALLOWED_EVENT_CATEGORIES
+                )
+                if allowed_items / total_items < MIN_CATEGORY_MAJORITY:
                     continue
 
                 sig = _signature(topic.lang, topic.keywords or [topic.label])

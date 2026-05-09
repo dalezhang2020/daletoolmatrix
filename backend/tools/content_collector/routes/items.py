@@ -112,6 +112,7 @@ async def list_items(
             ItemSnapshot.id == latest.c.snap_id,
         )
         .where(Item.first_seen_at >= since)
+        .where(Source.enabled.is_(True))
     )
 
     if lang:
@@ -189,6 +190,7 @@ async def list_categories(
         select(Item.category, _f.count(Item.id).label("n"))
         .join(Source, Source.id == Item.source_id)
         .where(Item.first_seen_at >= since)
+        .where(Source.enabled.is_(True))
         .group_by(Item.category)
     )
     if lang:
