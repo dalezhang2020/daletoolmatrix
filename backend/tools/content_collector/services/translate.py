@@ -80,9 +80,9 @@ _SYSTEM_PROMPT = (
 
 
 async def _llm_translate_batch(
-    entries: list[tuple[str, str | None]]
+    entries: list[tuple[str, str | None, str | None]]
 ) -> list[tuple[str | None, str | None]]:
-    """Translate (title, summary) pairs in one LLM call.
+    """Translate (title, summary, source_slug) triples in one LLM call.
 
     Returns a list aligned with `entries` of (title_zh, summary_zh). Either
     item can be None when the LLM didn't provide one. On transport failure,
@@ -101,12 +101,13 @@ async def _llm_translate_batch(
 
     url = endpoint.rstrip("/") + "/chat/completions"
     # Compact input format keeps token usage low.
+    # Slugs whose summaries are raw transcripts — skip to protect token budget.
+    SKIP_SUMMARY_SLUGS: frozenset[str] = frozenset({"follow_builders_podcasts"})
     lines: list[str] = []
-    for i, (title, summary) in enumerate(entries):
+    for i, (title, summary, slug) in enumerate(entries):
         lines.append(f"{i}. TITLE: {title[:250]}")
-        if summary:
-            # 2000 chars covers most summaries fully; podcast transcripts
-            # are excluded at the frontend level anyway.
+        if summary and slug not in SKIP_SUMMARY_SLUGS:
+            # 2000 chars covers most summaries fully without token risk.
             lines.append(f"   SUMMARY: {summary[:2000]}")
     user_payload = "\n".join(lines)
 
@@ -207,7 +208,7 @@ async def translate_backlog(
         )
 
         q = (
-            select(Item)
+            select(Item, Source.slug.label("source_slug"))
             .join(Source, Source.id == Item.source_id)
             .where(needs_work)
             .where(Source.lang == "en")
@@ -215,18 +216,22 @@ async def translate_backlog(
             .order_by(Item.first_seen_at.desc())
             .limit(batch_size)
         )
-        items: list[Item] = list((await session.execute(q)).scalars().all())
+        rows = (await session.execute(q)).all()
+        items: list[Item] = [r[0] for r in rows]
+        slugs: list[str] = [r[1] for r in rows]
 
         if not items:
             return {"processed": 0, "translated": 0, "deferred": 0}
 
         to_translate = items if llm_cap is None else items[: max(0, llm_cap)]
+        to_slugs = slugs[: len(to_translate)]
         deferred = items[len(to_translate):]
 
         translated_count = 0
         if to_translate:
             predictions = await _llm_translate_batch(
-                [(it.title, it.summary) for it in to_translate]
+                [(it.title, it.summary, slug)
+                 for it, slug in zip(to_translate, to_slugs)]
             )
             now = datetime.now(timezone.utc)
             for it, (title_zh, summary_zh) in zip(to_translate, predictions):

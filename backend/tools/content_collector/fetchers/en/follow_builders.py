@@ -204,9 +204,14 @@ class FollowBuildersPodcastsFetcher(BaseFetcher):
 
             ext_id = str(ep.get("guid") or _digest(url, title))
             show = ep.get("name") or "AI podcast"
-            # Store the full transcript — it's the primary value of this
-            # source. The frontend decides how much to surface.
             transcript = (ep.get("transcript") or "").strip()
+
+            # Store only the first 500 chars of transcript in `summary` —
+            # enough for the classifier to categorise the episode, but not
+            # so much that it blows the translation token budget.
+            # The full transcript is preserved in `extra` for future use
+            # (e.g. RAG, search) without polluting the translation pipeline.
+            summary_preview = transcript[:500] if transcript else None
 
             out.append(
                 NewsItem(
@@ -214,11 +219,16 @@ class FollowBuildersPodcastsFetcher(BaseFetcher):
                     title=f"{show}: {title}",
                     url=url,
                     author=show,
-                    summary=transcript if transcript else None,
+                    summary=summary_preview,
                     published_at=_iso_to_dt(ep.get("publishedAt")),
                     hot_raw=None,
                     metrics={
                         "has_transcript": bool(transcript),
+                    },
+                    extra={
+                        # Full transcript stored here for future RAG/search
+                        # use — NOT fed into the translation pipeline.
+                        "transcript": transcript[:50000] if transcript else None,
                     },
                 )
             )
