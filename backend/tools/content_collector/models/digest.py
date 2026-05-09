@@ -39,6 +39,11 @@ class Digest(Base):
     window_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     window_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
+    # AI-generated Chinese summary of the day's knowledge/tech items.
+    # Only populated for the 08:00 ET morning digest; rolling today-digests
+    # leave this NULL until the morning run.
+    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
     # Frozen snapshots (full data, self-contained so we never need to join back)
     events_snapshot: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     items_snapshot: Mapped[list] = mapped_column(JSON, default=list, nullable=False)

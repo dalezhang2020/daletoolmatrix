@@ -43,6 +43,7 @@ async def trigger_detect_events():
 @router.post("/generate-digest")
 async def trigger_generate_digest(
     date: str | None = Query(None, description="YYYY-MM-DD; default = yesterday in ET"),
+    with_summary: bool = Query(False, description="Generate LLM briefing (knowledge items only)"),
 ):
     target = None
     if date:
@@ -52,7 +53,7 @@ async def trigger_generate_digest(
             target = _date.fromisoformat(date)
         except ValueError:
             raise HTTPException(400, "invalid date — use YYYY-MM-DD")
-    return await generate_digest(target)
+    return await generate_digest(target, with_summary=with_summary)
 
 
 @router.post("/categorize")

@@ -177,8 +177,12 @@ def start_scheduler() -> None:
 
     # Daily digest snapshot — 08:00 Eastern (Dale's timezone).
     # Captures YESTERDAY's completed day for morning reading.
+    # with_summary=True triggers the LLM briefing (knowledge items only).
+    async def _digest_yesterday():
+        return await generate_digest(with_summary=True)
+
     _scheduler.add_job(
-        generate_digest,
+        _digest_yesterday,
         trigger=CronTrigger(hour=8, minute=0, timezone="America/New_York"),
         id="content_collector:digest_yesterday",
         replace_existing=True,

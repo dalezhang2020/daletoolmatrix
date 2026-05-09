@@ -72,6 +72,7 @@ async def get_digest(
         "generated_at": digest.generated_at.isoformat(),
         "window_start": digest.window_start.isoformat(),
         "window_end": digest.window_end.isoformat(),
+        "summary": digest.summary,
         "event_count": digest.event_count,
         "item_count": digest.item_count,
         "topic_count": digest.topic_count,
