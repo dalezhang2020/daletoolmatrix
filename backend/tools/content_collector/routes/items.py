@@ -24,7 +24,14 @@ _MIN_DECAY = 0.02
 @router.get("")
 async def list_items(
     lang: Optional[str] = Query(None, description="zh or en"),
-    source: Optional[str] = Query(None, description="source slug"),
+    source: Optional[str] = Query(
+        None,
+        description=(
+            "Source slug, or a comma-separated list of slugs to match any "
+            "(used by the frontend source-group pills, e.g. "
+            "'bbc_world,nyt_top' for the 'World News' group)."
+        ),
+    ),
     category: Optional[str] = Query(None, description="category slug"),
     exclude_category: Optional[str] = Query(
         None,
@@ -118,7 +125,11 @@ async def list_items(
     if lang:
         q = q.where(Source.lang == lang)
     if source:
-        q = q.where(Source.slug == source)
+        slugs = [s.strip() for s in source.split(",") if s.strip()]
+        if len(slugs) == 1:
+            q = q.where(Source.slug == slugs[0])
+        elif slugs:
+            q = q.where(Source.slug.in_(slugs))
     if category:
         q = q.where(Item.category == category)
     if exclude_category:
