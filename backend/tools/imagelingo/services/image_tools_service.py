@@ -1,14 +1,11 @@
-"""Image tools service — background removal (GPT-4o-mini vision + Pillow) and smart resize/crop.
+"""Image tools service — background removal (GPT Image edit) and smart resize/crop.
 
-Background removal: GPT-4o-mini identifies the product bounding region, then Pillow
-applies a simple white-background composite. Fast (~3-5s total).
+Background removal: uses GPT Image edit for high-quality results (~25s).
 Smart resize: algorithm-based crop (center) + optional AI extend (GPT Image outpainting).
 """
 from __future__ import annotations
 
 import asyncio
-import base64
-import json
 import logging
 import os
 import time
@@ -16,7 +13,7 @@ import urllib.request
 from io import BytesIO
 from typing import Literal
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -32,161 +29,86 @@ PRESETS = {
 }
 
 
-# ── Background Removal (GPT-4o-mini vision + Pillow) ─────────────────────
+# ── Background Removal (GPT Image edit) ─────────────────────────────────
 
 async def remove_background(image_bytes: bytes, output_format: str = "png") -> bytes:
-    """Remove background using GPT-4o-mini for segmentation + Pillow for compositing.
-    
-    Pipeline:
-    1. Send image to GPT-4o-mini vision → get polygon coordinates of the main subject
-    2. Create mask from polygon
-    3. Apply mask to isolate subject on white/transparent background
-    
-    Total time: ~3-5 seconds.
+    """Remove background from image using GPT Image edit.
+    Returns image with clean white background. ~25s processing time.
     """
-    from backend.tools.imagelingo.services.gpt_image_service import _get_client
+    from backend.tools.imagelingo.services.gpt_image_service import _call_image_edit
 
     t0 = time.perf_counter()
 
-    # Prepare image
     img = Image.open(BytesIO(image_bytes))
-    if img.mode not in ("RGB", "RGBA"):
-        img = img.convert("RGB")
+    if img.mode in ("P",):
+        img = img.convert("RGBA")
+
     orig_size = img.size
 
-    # Resize for API (max 1024px to save tokens)
+    # Resize to max 1024px for API
     max_dim = 1024
-    scale = 1.0
     if max(img.size) > max_dim:
-        scale = max_dim / max(img.size)
-        new_size = (int(img.size[0] * scale), int(img.size[1] * scale))
-        api_img = img.resize(new_size, Image.LANCZOS)
+        ratio = max_dim / max(img.size)
+        new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+        img = img.resize(new_size, Image.LANCZOS)
+
+    # Determine API size based on aspect ratio
+    w, h = img.size
+    aspect = w / h
+    if aspect > 1.18:
+        api_size = "1536x1024"
+    elif aspect < 0.85:
+        api_size = "1024x1536"
     else:
-        api_img = img
+        api_size = "1024x1024"
 
-    api_w, api_h = api_img.size
+    # Convert to JPEG for API input
+    if img.mode == "RGBA":
+        bg = Image.new("RGB", img.size, (255, 255, 255))
+        bg.paste(img, mask=img.split()[3])
+        img = bg
+    elif img.mode != "RGB":
+        img = img.convert("RGB")
 
-    # Convert to base64 for vision API
     buf = BytesIO()
-    api_img.save(buf, format="JPEG", quality=85)
-    b64 = base64.b64encode(buf.getvalue()).decode()
+    img.save(buf, format="JPEG", quality=90)
+    prepared_bytes = buf.getvalue()
 
-    # Step 1: GPT-4o-mini vision — get segmentation polygon
-    client = _get_client()
-
-    prompt = f"""Analyze this product image ({api_w}x{api_h} pixels).
-Return a JSON object with a polygon outlining the main product/subject.
-The polygon should tightly follow the edges of the product.
-
-Return format:
-{{"polygon": [[x1,y1], [x2,y2], ...], "has_clear_subject": true}}
-
-Rules:
-- Coordinates are in pixels relative to the image dimensions ({api_w}x{api_h})
-- Include 12-20 points for a smooth outline
-- Follow the product edges closely
-- If no clear subject exists, set has_clear_subject to false and return an empty polygon"""
-
-    response = await asyncio.to_thread(
-        client.chat.completions.create,
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": [
-            {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "low"}},
-        ]}],
-        response_format={"type": "json_object"},
-        max_tokens=800,
+    prompt = (
+        "Remove the background from this image completely. "
+        "Keep ONLY the main subject/product with pixel-perfect edges. "
+        "The background should be pure solid white (#FFFFFF). "
+        "Do NOT alter the product in any way - preserve all details, colors, shadows, and textures exactly. "
+        "The result should look like a professional product photo on a clean white background."
     )
 
-    text = response.choices[0].message.content or "{}"
-    try:
-        data = json.loads(text)
-        polygon = data.get("polygon", [])
-        has_subject = data.get("has_clear_subject", True)
-    except json.JSONDecodeError:
-        logger.error("Segmentation parse failed: %s", text[:200])
-        polygon = []
-        has_subject = False
+    result_bytes = await _call_image_edit(prepared_bytes, prompt, "high", api_size)
 
-    logger.info("Segmentation: %d polygon points, has_subject=%s (%.2fs)",
-                len(polygon), has_subject, time.perf_counter() - t0)
+    elapsed = time.perf_counter() - t0
+    logger.info("Background removal (GPT Image): %.2fs, input=%d bytes", elapsed, len(image_bytes))
 
-    # Step 2: Create mask and composite
-    if not polygon or len(polygon) < 3 or not has_subject:
-        # Fallback: return original image on white background (no segmentation possible)
-        logger.warning("No valid polygon, returning original on white bg")
-        result = _simple_white_bg(img)
-    else:
-        # Scale polygon back to original image size
-        if scale != 1.0:
-            polygon = [[int(x / scale), int(y / scale)] for x, y in polygon]
-
-        result = _apply_polygon_mask(img, polygon, output_format)
+    # Restore to original size if needed
+    result_img = Image.open(BytesIO(result_bytes))
+    if result_img.size != orig_size:
+        result_img = result_img.resize(orig_size, Image.LANCZOS)
 
     # Encode output
     buf = BytesIO()
     if output_format == "png":
-        result.save(buf, format="PNG", optimize=True)
+        if result_img.mode != "RGB":
+            result_img = result_img.convert("RGB")
+        result_img.save(buf, format="PNG", optimize=True)
     else:
-        if result.mode == "RGBA":
-            bg = Image.new("RGB", result.size, (255, 255, 255))
-            bg.paste(result, mask=result.split()[3])
-            result = bg
-        elif result.mode != "RGB":
-            result = result.convert("RGB")
-        result.save(buf, format="JPEG", quality=92)
+        if result_img.mode != "RGB":
+            result_img = result_img.convert("RGB")
+        result_img.save(buf, format="JPEG", quality=92)
 
-    elapsed = time.perf_counter() - t0
-    logger.info("Background removal complete: %.2fs, output=%d bytes", elapsed, buf.tell())
     return buf.getvalue()
-
-
-def _apply_polygon_mask(img: Image.Image, polygon: list, output_format: str) -> Image.Image:
-    """Create a smooth mask from polygon and apply to image."""
-    w, h = img.size
-
-    # Create mask from polygon
-    mask = Image.new("L", (w, h), 0)
-    draw = ImageDraw.Draw(mask)
-    # Convert polygon to flat tuple list
-    poly_tuples = [(int(p[0]), int(p[1])) for p in polygon if len(p) >= 2]
-    if len(poly_tuples) >= 3:
-        draw.polygon(poly_tuples, fill=255)
-
-    # Smooth the mask edges with gaussian blur for natural look
-    mask = mask.filter(ImageFilter.GaussianBlur(radius=3))
-
-    # Expand mask slightly to avoid cutting into the product
-    # Dilate by applying threshold after blur
-    mask = mask.point(lambda x: 255 if x > 30 else 0)
-    # Re-blur for smooth edges
-    mask = mask.filter(ImageFilter.GaussianBlur(radius=2))
-
-    if output_format == "png":
-        # RGBA with transparency
-        result = img.convert("RGBA")
-        result.putalpha(mask)
-    else:
-        # White background
-        bg = Image.new("RGB", (w, h), (255, 255, 255))
-        bg.paste(img, mask=mask)
-        result = bg
-
-    return result
-
-
-def _simple_white_bg(img: Image.Image) -> Image.Image:
-    """Fallback: just return the image as-is (no segmentation)."""
-    if img.mode != "RGB":
-        img = img.convert("RGB")
-    return img
 
 
 # ── Smart Resize / Crop ──────────────────────────────────────────────────
 
-def _compute_crop_box(
-    src_w: int, src_h: int, target_ratio: float
-) -> tuple[int, int, int, int]:
+def _compute_crop_box(src_w, src_h, target_ratio):
     """Compute center crop box to achieve target aspect ratio."""
     src_ratio = src_w / src_h
     if src_ratio > target_ratio:
@@ -199,9 +121,7 @@ def _compute_crop_box(
         return (0, offset, src_w, offset + new_h)
 
 
-def _compute_pad_box(
-    src_w: int, src_h: int, target_ratio: float
-) -> tuple[int, int, tuple[int, int]]:
+def _compute_pad_box(src_w, src_h, target_ratio):
     """Compute padding needed to achieve target aspect ratio."""
     src_ratio = src_w / src_h
     if src_ratio > target_ratio:
@@ -224,13 +144,7 @@ async def smart_resize(
     output_size: int | None = None,
     bg_color: str = "#FFFFFF",
 ) -> bytes:
-    """Resize image to target aspect ratio.
-
-    Modes:
-    - crop: center crop to target ratio (default, fast, free)
-    - pad: add solid color padding to reach target ratio
-    - ai_extend: use GPT Image to outpaint/extend the image (costs credits)
-    """
+    """Resize image to target aspect ratio."""
     t0 = time.perf_counter()
 
     img = Image.open(BytesIO(image_bytes))
@@ -239,7 +153,6 @@ async def smart_resize(
 
     src_w, src_h = img.size
 
-    # Parse target ratio
     if target_ratio in PRESETS:
         rw, rh = PRESETS[target_ratio]
     else:
@@ -269,7 +182,6 @@ async def smart_resize(
     else:
         raise ValueError(f"Unknown mode: {mode}")
 
-    # Apply output_size constraint
     if output_size:
         w, h = result.size
         if max(w, h) > output_size:
@@ -278,15 +190,12 @@ async def smart_resize(
 
     buf = BytesIO()
     result.save(buf, format="JPEG", quality=92, optimize=True)
-    out = buf.getvalue()
-
     logger.info("Smart resize (%s): %dx%d -> %dx%d in %.2fs",
                 mode, src_w, src_h, result.size[0], result.size[1], time.perf_counter() - t0)
-    return out
+    return buf.getvalue()
 
 
-def _parse_hex_color(hex_str: str) -> tuple[int, int, int]:
-    """Parse hex color string to RGB tuple."""
+def _parse_hex_color(hex_str: str) -> tuple:
     hex_str = hex_str.lstrip("#")
     if len(hex_str) == 3:
         hex_str = "".join(c * 2 for c in hex_str)
@@ -295,9 +204,7 @@ def _parse_hex_color(hex_str: str) -> tuple[int, int, int]:
     return (int(hex_str[0:2], 16), int(hex_str[2:4], 16), int(hex_str[4:6], 16))
 
 
-async def _ai_extend(
-    image_bytes: bytes, img: Image.Image, target_ratio: float, output_size: int | None
-) -> bytes:
+async def _ai_extend(image_bytes, img, target_ratio, output_size):
     """Use GPT Image to extend/outpaint image to target ratio."""
     from backend.tools.imagelingo.services.gpt_image_service import _call_image_edit
 
