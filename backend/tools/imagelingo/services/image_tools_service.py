@@ -1,6 +1,6 @@
-"""Image tools service — background removal (FLUX.1-Kontext-pro) and smart resize/crop.
+"""Image tools service — background removal (gpt-image-1-mini) and smart resize/crop.
 
-Background removal: uses FLUX.1-Kontext-pro via images.generate with image reference (~5s).
+Background removal: uses gpt-image-1-mini medium quality (~17s).
 Smart resize: algorithm-based crop (center) + optional AI extend (GPT Image outpainting).
 """
 from __future__ import annotations
@@ -14,11 +14,11 @@ import urllib.request
 from io import BytesIO
 from typing import Literal
 
+import httpx
 from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-# Preset aspect ratios for e-commerce platforms
 PRESETS = {
     "1:1": (1, 1),
     "4:3": (4, 3),
@@ -29,27 +29,29 @@ PRESETS = {
     "9:16": (9, 16),
 }
 
-# FLUX Kontext uses the same Azure endpoint and key as GPT models
 AZURE_ENDPOINT = os.environ.get(
     "AZURE_OPENAI_ENDPOINT",
     "https://foundry-llm-zg.services.ai.azure.com/openai/v1",
 )
 AZURE_API_KEY = os.environ.get("AZURE_OPENAI_API_KEY", "")
-FLUX_DEPLOYMENT = "FLUX.1-Kontext-pro"
+BG_REMOVAL_DEPLOYMENT = "gpt-image-1-mini"
+BG_REMOVAL_QUALITY = "medium"
 
 
-def _get_flux_client():
-    """Get OpenAI client configured for FLUX.1-Kontext-pro on Azure Foundry."""
-    from openai import OpenAI
-    return OpenAI(base_url=AZURE_ENDPOINT, api_key=AZURE_API_KEY)
+def _get_edit_url(deployment: str) -> str:
+    """Build the Azure image edit endpoint URL."""
+    endpoint = AZURE_ENDPOINT.rstrip("/")
+    for suffix in ("/openai/v1", "/v1"):
+        if endpoint.endswith(suffix):
+            endpoint = endpoint[:-len(suffix)]
+            break
+    return f"{endpoint}/openai/deployments/{deployment}/images/edits?api-version=2025-04-01-preview"
 
 
-# ── Background Removal (FLUX.1-Kontext-pro) ─────────────────────────────
+# ── Background Removal (gpt-image-1-mini) ────────────────────────────────
 
 async def remove_background(image_bytes: bytes, output_format: str = "png") -> bytes:
-    """Remove background from image using FLUX.1-Kontext-pro.
-    Uses images.generate with image reference. ~5s processing time.
-    """
+    """Remove background using gpt-image-1-mini medium quality. ~17s."""
     t0 = time.perf_counter()
 
     img = Image.open(BytesIO(image_bytes))
@@ -65,7 +67,17 @@ async def remove_background(image_bytes: bytes, output_format: str = "png") -> b
         new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
         img = img.resize(new_size, Image.LANCZOS)
 
-    # Convert to RGB PNG for API
+    # Determine API size
+    w, h = img.size
+    aspect = w / h
+    if aspect > 1.18:
+        api_size = "1536x1024"
+    elif aspect < 0.85:
+        api_size = "1024x1536"
+    else:
+        api_size = "1024x1024"
+
+    # Convert to JPEG
     if img.mode == "RGBA":
         bg = Image.new("RGB", img.size, (255, 255, 255))
         bg.paste(img, mask=img.split()[3])
@@ -73,58 +85,46 @@ async def remove_background(image_bytes: bytes, output_format: str = "png") -> b
     elif img.mode != "RGB":
         img = img.convert("RGB")
 
-    # Determine output size
-    w, h = img.size
-    aspect = w / h
-    if aspect > 1.3:
-        api_size = "1536x1024"
-    elif aspect < 0.77:
-        api_size = "1024x1536"
-    else:
-        api_size = "1024x1024"
-
-    # Encode to base64
     buf = BytesIO()
-    img.save(buf, format="PNG")
-    img_b64 = base64.b64encode(buf.getvalue()).decode()
+    img.save(buf, format="JPEG", quality=90)
+    prepared_bytes = buf.getvalue()
 
     prompt = (
         "Remove the background from this image completely. "
-        "Keep only the main product/subject with clean, precise edges. "
-        "Replace the background with pure solid white (#FFFFFF). "
-        "Do not alter the product at all. [img-0]"
+        "Keep ONLY the main subject/product with pixel-perfect edges. "
+        "The background should be pure solid white (#FFFFFF). "
+        "Do NOT alter the product in any way."
     )
 
-    # Call FLUX.1-Kontext-pro via images.generate with image reference
-    client = _get_flux_client()
+    edit_url = _get_edit_url(BG_REMOVAL_DEPLOYMENT)
 
-    response = await asyncio.to_thread(
-        client.images.generate,
-        model=FLUX_DEPLOYMENT,
-        prompt=prompt,
-        n=1,
-        size=api_size,
-        extra_body={
-            "image": [f"data:image/png;base64,{img_b64}"]
-        },
-    )
+    async with httpx.AsyncClient(timeout=180) as client:
+        resp = await client.post(
+            edit_url,
+            files={"image": ("source.jpg", prepared_bytes, "image/jpeg")},
+            data={
+                "prompt": prompt,
+                "n": "1",
+                "size": api_size,
+                "quality": BG_REMOVAL_QUALITY,
+            },
+            headers={"api-key": AZURE_API_KEY},
+        )
 
-    # Extract result
-    result_b64 = response.data[0].b64_json
-    if not result_b64:
-        if response.data[0].url:
-            req = urllib.request.Request(response.data[0].url)
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                result_bytes = resp.read()
-        else:
-            raise ValueError("FLUX returned no image data")
-    else:
-        result_bytes = base64.b64decode(result_b64)
+    if resp.status_code != 200:
+        raise ValueError(f"Image edit failed ({resp.status_code}): {resp.text[:300]}")
+
+    result_data = resp.json()
+    b64 = result_data.get("data", [{}])[0].get("b64_json", "")
+    if not b64:
+        raise ValueError("No image data returned")
+
+    result_bytes = base64.b64decode(b64)
 
     elapsed = time.perf_counter() - t0
-    logger.info("Background removal (FLUX Kontext): %.2fs", elapsed)
+    logger.info("Background removal (gpt-image-1-mini medium): %.2fs", elapsed)
 
-    # Restore to original size if needed
+    # Restore to original size
     result_img = Image.open(BytesIO(result_bytes))
     if result_img.size != orig_size:
         result_img = result_img.resize(orig_size, Image.LANCZOS)
