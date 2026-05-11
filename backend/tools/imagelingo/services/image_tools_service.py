@@ -1,17 +1,15 @@
-"""Image tools service — background removal and smart resize/crop.
+"""Image tools service — background removal (GPT Image) and smart resize/crop.
 
-Background removal: uses rembg (U2Net) for pixel-accurate alpha mask.
-Smart resize: algorithm-based crop (center/saliency) + optional AI extend (GPT Image outpainting).
+Background removal: uses GPT Image edit to remove background and output transparent/white-bg image.
+Smart resize: algorithm-based crop (center) + optional AI extend (GPT Image outpainting).
 """
 from __future__ import annotations
 
 import asyncio
 import base64
-import datetime
 import logging
 import os
 import time
-import uuid
 import urllib.request
 from io import BytesIO
 from typing import Literal
@@ -32,38 +30,84 @@ PRESETS = {
 }
 
 
-# ── Background Removal ───────────────────────────────────────────────────
+# ── Background Removal (GPT Image) ──────────────────────────────────────
 
 async def remove_background(image_bytes: bytes, output_format: str = "png") -> bytes:
-    """Remove background from image using rembg (U2Net model).
-    Returns PNG bytes with transparent background.
+    """Remove background from image using GPT Image edit.
+    Returns PNG bytes with transparent background or JPG with white background.
     """
-    from rembg import remove
+    from backend.tools.imagelingo.services.gpt_image_service import _call_image_edit
 
     t0 = time.perf_counter()
 
-    # Run in thread pool since rembg is CPU-intensive
-    result_bytes = await asyncio.to_thread(
-        remove,
-        image_bytes,
-        alpha_matting=False,
-        post_process_mask=True,
+    # Prepare image: resize to API-compatible size
+    img = Image.open(BytesIO(image_bytes))
+    if img.mode in ("P",):
+        img = img.convert("RGBA")
+
+    orig_size = img.size
+
+    # Resize to max 1024px for API
+    max_dim = 1024
+    if max(img.size) > max_dim:
+        ratio = max_dim / max(img.size)
+        new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+        img = img.resize(new_size, Image.LANCZOS)
+
+    # Determine API size
+    w, h = img.size
+    aspect = w / h
+    if aspect > 1.18:
+        api_size = "1536x1024"
+    elif aspect < 0.85:
+        api_size = "1024x1536"
+    else:
+        api_size = "1024x1024"
+
+    # Convert to JPEG for API input
+    if img.mode == "RGBA":
+        bg = Image.new("RGB", img.size, (255, 255, 255))
+        bg.paste(img, mask=img.split()[3])
+        img = bg
+    elif img.mode != "RGB":
+        img = img.convert("RGB")
+
+    buf = BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    prepared_bytes = buf.getvalue()
+
+    prompt = (
+        "Remove the background from this image completely. "
+        "Keep ONLY the main subject/product with pixel-perfect edges. "
+        "The background should be pure white (#FFFFFF). "
+        "Do NOT alter the product in any way — preserve all details, colors, shadows, and textures exactly. "
+        "The result should look like a professional product photo on a clean white background."
     )
 
+    result_bytes = await _call_image_edit(prepared_bytes, prompt, "high", api_size)
+
     elapsed = time.perf_counter() - t0
-    logger.info("Background removal: %.2fs, input=%d bytes, output=%d bytes",
-                elapsed, len(image_bytes), len(result_bytes))
+    logger.info("Background removal (GPT Image): %.2fs, input=%d bytes", elapsed, len(image_bytes))
+
+    # Restore to original size if needed
+    result_img = Image.open(BytesIO(result_bytes))
+    if result_img.size != orig_size:
+        result_img = result_img.resize(orig_size, Image.LANCZOS)
 
     if output_format == "png":
-        return result_bytes
-
-    # Convert to white background JPEG if requested
-    img = Image.open(BytesIO(result_bytes)).convert("RGBA")
-    bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
-    bg.paste(img, mask=img.split()[3])
-    buf = BytesIO()
-    bg.convert("RGB").save(buf, format="JPEG", quality=92)
-    return buf.getvalue()
+        buf = BytesIO()
+        # GPT Image returns white bg, convert to PNG (no true transparency but clean white bg)
+        result_img.save(buf, format="PNG", optimize=True)
+        return buf.getvalue()
+    else:
+        # JPEG output
+        if result_img.mode == "RGBA":
+            result_img = result_img.convert("RGB")
+        elif result_img.mode != "RGB":
+            result_img = result_img.convert("RGB")
+        buf = BytesIO()
+        result_img.save(buf, format="JPEG", quality=92)
+        return buf.getvalue()
 
 
 # ── Smart Resize / Crop ──────────────────────────────────────────────────
@@ -211,7 +255,6 @@ async def _ai_extend(
     from backend.tools.imagelingo.services.gpt_image_service import _call_image_edit
 
     src_w, src_h = img.size
-    current_ratio = src_w / src_h
 
     # Determine API size based on target ratio
     if target_ratio > 1.18:
@@ -227,17 +270,14 @@ async def _ai_extend(
     new_w, new_h = int(src_w * scale), int(src_h * scale)
     resized = img.resize((new_w, new_h), Image.LANCZOS)
 
-    # Place on canvas with transparent edges (areas to fill)
-    canvas = Image.new("RGBA", (api_w, api_h), (0, 0, 0, 0))
+    # Place on white canvas
+    canvas = Image.new("RGB", (api_w, api_h), (255, 255, 255))
     paste_x = (api_w - new_w) // 2
     paste_y = (api_h - new_h) // 2
-    canvas.paste(resized.convert("RGBA"), (paste_x, paste_y))
+    canvas.paste(resized, (paste_x, paste_y))
 
-    # Convert to JPEG for API (transparent areas become context for outpainting)
     buf = BytesIO()
-    canvas_rgb = Image.new("RGB", (api_w, api_h), (255, 255, 255))
-    canvas_rgb.paste(resized, (paste_x, paste_y))
-    canvas_rgb.save(buf, format="JPEG", quality=90)
+    canvas.save(buf, format="JPEG", quality=90)
     prepared_bytes = buf.getvalue()
 
     prompt = (
