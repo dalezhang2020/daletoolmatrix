@@ -57,9 +57,11 @@ async def search_customers(
             logger.info(f"Searching by email: {email}")
             try:
                 customers_result = await shopline_service.search_customers_by_email(email)
+                raw_customers = customers_result.get("customers", [])
+                logger.info(f"v2/search returned {len(raw_customers)} customers; first keys: {list(raw_customers[0].keys()) if raw_customers else []}")
                 return CustomersResponse(
                     success=True,
-                    data=customers_result.get("customers", []),
+                    data=raw_customers,
                 )
             except Exception as e:
                 logger.error(f"Error searching by email: {e}")
