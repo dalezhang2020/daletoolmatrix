@@ -50,46 +50,20 @@ async def search_customers(
     try:
         shopline_service = get_shopline_service(request)
         
-        # 如果提供了邮箱，优先通过邮箱搜索订单（这样可以获得更完整的客户信息）
+        # Search by email — use v2 customer search so archived-only customers
+        # are still found. Orders are fetched separately by the frontend via
+        # GET /api/customers/{customer_id}/orders.
         if email:
             logger.info(f"Searching by email: {email}")
             try:
-                # 先搜索订单，因为订单包含完整的客户信息
-                orders_result = await shopline_service.get_orders_by_email(email, limit=limit)
-                orders = orders_result.get('orders', [])
-                
-                if orders:
-                    # 从订单中提取客户信息
-                    customer_data = {
-                        'id': orders[0].get('customer', {}).get('id'),
-                        'email': email,
-                        'first_name': orders[0].get('customer', {}).get('first_name'),
-                        'last_name': orders[0].get('customer', {}).get('last_name'),
-                        'phone': orders[0].get('customer', {}).get('phone'),
-                        'orders_count': len(orders),
-                        'total_spent': sum(float(order.get('current_total_price', 0)) for order in orders),
-                        'orders': orders  # 包含订单数据
-                    }
-                    
-                    return CustomersResponse(
-                        success=True,
-                        data=[customer_data]
-                    )
-                else:
-                    # 如果通过邮箱没找到订单，尝试搜索客户
-                    customers_result = await shopline_service.search_customers_by_email(email)
-                    return CustomersResponse(
-                        success=True,
-                        data=customers_result.get('customers', [])
-                    )
-            except Exception as e:
-                logger.error(f"Error searching by email: {e}")
-                # 如果订单搜索失败，尝试客户搜索
                 customers_result = await shopline_service.search_customers_by_email(email)
                 return CustomersResponse(
                     success=True,
-                    data=customers_result.get('customers', [])
+                    data=customers_result.get("customers", []),
                 )
+            except Exception as e:
+                logger.error(f"Error searching by email: {e}")
+                return CustomersResponse(success=True, data=[])
         
         # 如果提供了订单ID，通过订单API查找客户
         if order_id:

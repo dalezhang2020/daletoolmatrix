@@ -112,43 +112,33 @@ class ShoplineAPIService:
         return await self._make_request("GET", f"/customers/{customer_id}.json")
     
     async def search_customers_by_email(self, email: str) -> Dict[str, Any]:
-        """通过邮箱搜索客户"""
-        # 先尝试通过订单搜索，因为订单包含完整的客户信息
+        """通过邮箱搜索客户.
+
+        Uses the v2 search endpoint which works for all customers including
+        those whose orders are archived. The legacy /customers.json?email=
+        endpoint returns 500 on this storefront.
+        """
         try:
-            orders_result = await self.get_orders_by_email(email)
-            if orders_result.get('orders'):
-                # 从第一个订单中提取客户信息
-                first_order = orders_result['orders'][0]
-                customer_data = {
-                    'id': first_order.get('customer', {}).get('id'),
-                    'email': email,
-                    'first_name': first_order.get('customer', {}).get('first_name'),
-                    'last_name': first_order.get('customer', {}).get('last_name'),
-                    'phone': first_order.get('customer', {}).get('phone'),
-                    'created_at': first_order.get('created_at'),
-                    'updated_at': first_order.get('updated_at'),
-                    'orders_count': len(orders_result['orders']),
-                    'total_spent': sum(float(order.get('current_total_price', 0)) for order in orders_result['orders']),
-                    'orders': orders_result['orders']
-                }
-                return {'customers': [customer_data]}
-        except Exception as e:
-            logger.warning(f"Failed to search by orders: {e}")
-        
-        # 如果通过订单搜索失败，尝试客户搜索
-        try:
-            return await self._make_request("GET", "/customers.json", params={"email": email})
+            return await self._make_request(
+                "GET",
+                "/customers/v2/search.json",
+                params={"query_param": email},
+            )
         except Exception as e:
             logger.error(f"Failed to search customers by email: {e}")
-            return {'customers': []}
+            return {"customers": []}
     
     async def search_customers_by_phone(self, phone: str) -> Dict[str, Any]:
-        """通过电话搜索客户"""
+        """通过电话搜索客户 (v2 search endpoint)."""
         try:
-            return await self._make_request("GET", "/customers.json", params={"phone": phone})
+            return await self._make_request(
+                "GET",
+                "/customers/v2/search.json",
+                params={"query_param": phone},
+            )
         except Exception as e:
             logger.error(f"Failed to search customers by phone: {e}")
-            return {'customers': []}
+            return {"customers": []}
     
     async def search_customers_by_name(self, first_name: str = None, last_name: str = None) -> Dict[str, Any]:
         """通过姓名搜索客户"""
@@ -238,16 +228,29 @@ class ShoplineAPIService:
         return await self._make_request("GET", "/orders.json", params=params)
     
     async def get_orders_by_customer(self, customer_id: str, page_info: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
-        """获取客户的订单"""
+        """Return all orders for a customer including archived ones.
+
+        Uses /customers/{id}/orders.json with status=any so that orders
+        Shopline has moved to the archived ("hidden") cold tier are still
+        included. The response uses ``list`` instead of ``orders``; we
+        normalize it back to ``orders`` for downstream compatibility.
+        """
         params = {
-            "buyer_id": customer_id,  # 使用正确的参数名
-            "limit": min(limit, 100)
+            "status": "any",
+            "limit": min(limit, 100),
         }
-        
         if page_info:
             params["page_info"] = page_info
-            
-        return await self._make_request("GET", "/orders.json", params=params)
+
+        result = await self._make_request(
+            "GET",
+            f"/customers/{customer_id}/orders.json",
+            params=params,
+        )
+        # Normalize the response shape: {"list": [...]} -> {"orders": [...]}
+        if "orders" not in result:
+            result["orders"] = result.pop("list", []) or []
+        return result
     
     async def update_order_status(self, order_id: str, status: OrderStatus, notes: Optional[str] = None) -> Dict[str, Any]:
         """更新订单状态"""
